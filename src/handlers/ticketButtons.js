@@ -351,12 +351,13 @@ const claimTicketHandler = {
           // محاولة جلب الـ ID بجميع الاحتمالات الممكنة في ملف الـ Config الخاص بك
           const staffRoleId = config.ticketStaffRole || config.staffRoleId || config.supportRoleId || config.staffRole; 
 
-          // 1. إخفاء غرفه التيكت فوراً عن رتبة الدعم المشتركة بالكامل لمنع التداخل
           if (staffRoleId) {
-            await interaction.channel.permissionOverwrites.edit(staffRoleId, { 
-              ViewChannel: false 
-            }).catch(err => logger.error(`فشل حجب الرتبة ${staffRoleId}:`, err));
-          } else {
+  await interaction.channel.permissionOverwrites.edit(staffRoleId, { 
+    ViewChannel: false,
+    SendMessages: false,
+    ReadMessageHistory: false
+  }).catch(err => logger.error(`فشل حجب الرتبة ${staffRoleId}:`, err));
+}
             // محاولة احتياطية: إذا لم يجد ID الرتبة في الـ config، يقوم بالبحث عن رتبة الإداري الذي ضغط الزر وحجبها عن بقية الأعضاء الذين يملكون نفس الرتبة
             const memberRoles = interaction.member.roles.cache;
             // نأخذ أعلى رتبة للدعم لدى الإداري (تخطي رتبة @everyone)
