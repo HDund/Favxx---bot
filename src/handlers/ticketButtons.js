@@ -144,7 +144,6 @@ const createTicketHandler = {
       const actionRow = new ActionRowBuilder().addComponents(reasonInput);
       modal.addComponents(actionRow);
       
-      // showModal must be called directly without defer
       await interaction.showModal(modal);
     } catch (error) {
       logger.error('Error creating ticket modal:', error);
@@ -207,13 +206,12 @@ const closeTicketHandler = {
     try {
       if (!(await ensureGuildContext(interaction))) return;
 
-      // Use timeout-aware permission check to prevent interaction expiration
       const permissionCheck = await checkTicketPermissionWithTimeout(
         interaction,
         client,
         'close this ticket',
         { allowTicketCreator: true },
-        2000 // 2 second timeout for permission checks
+        2000
       );
 
       if (!permissionCheck.success) {
@@ -241,7 +239,6 @@ const closeTicketHandler = {
       const actionRow = new ActionRowBuilder().addComponents(reasonInput);
       modal.addComponents(actionRow);
 
-      // showModal must be called directly without defer
       await interaction.showModal(modal);
     } catch (error) {
       logger.error('Error closing ticket:', error);
@@ -262,7 +259,6 @@ const closeTicketModalHandler = {
     try {
       if (!(await ensureGuildContext(interaction))) return;
 
-      // Use timeout-aware permission check 
       const permissionCheck = await checkTicketPermissionWithTimeout(
         interaction,
         client,
@@ -347,6 +343,36 @@ const claimTicketHandler = {
       const result = await claimTicket(interaction.channel, interaction.user);
       
       if (result.success) {
+        // --- [ التعديل المتوافق مع نظام Tickety ] ---
+        try {
+          const config = await getGuildConfig(client, interaction.guildId);
+          const staffRoleId = config.ticketStaffRole || config.staffRoleId; 
+
+          if (staffRoleId) {
+            // 1. إزالة صلاحية الرؤية عن رتبة الدعم الفني كاملة
+            await interaction.channel.permissionOverwrites.edit(staffRoleId, {
+              ViewChannel: false
+            });
+          }
+
+          // 2. إعطاء الصلاحية الكاملة للإداري الذي قام بالاستلام بمفرده
+          await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
+            ViewChannel: true,
+            SendMessages: true,
+            AttachFiles: true,
+            ReadMessageHistory: true
+          });
+
+          // إرسال رسالة عامة داخل قنوات التيكت تُعلم الجميع بالاستلام
+          await interaction.channel.send({
+            embeds: [successEmbed('🎫 تيكت مستلمة', `تم استلام هذه التيكت بواسطة ${interaction.user} ولن يتمكن باقي المشرفين من رؤيتها.`)]
+          });
+
+        } catch (permError) {
+          logger.error('Error updating permissions on claim:', permError);
+        }
+        // ---------------------------------------------
+
         await interaction.editReply({
           embeds: [successEmbed('Ticket Claimed', 'You have successfully claimed this ticket!')],
           flags: MessageFlags.Ephemeral
@@ -478,15 +504,13 @@ const pinTicketHandler = {
         return;
       }
 
-      // Check if channel name already has ping emoji
       const hasPingEmoji = channel.name.startsWith('📌');
       
       if (hasPingEmoji) {
-        // Unpin: remove emoji and update position
         const newName = channel.name.replace(/^📌\s*/, '');
         await channel.edit({ 
           name: newName,
-          position: 999 // Move to end
+          position: 999 
         });
 
         await interaction.editReply({
@@ -505,11 +529,10 @@ const pinTicketHandler = {
           userId: interaction.user.id
         });
       } else {
-        // Pin: add emoji and update position
         const newName = `📌 ${channel.name}`;
         await channel.edit({ 
           name: newName,
-          position: 0 // Move to top
+          position: 0 
         });
 
         await interaction.editReply({
@@ -593,6 +616,35 @@ const unclaimTicketHandler = {
       const result = await unclaimTicket(interaction.channel, interaction.member);
       
       if (result.success) {
+        // --- [ إرجاع الصلاحيات عند إلغاء الاستلام ] ---
+        try {
+          const config = await getGuildConfig(client, interaction.guildId);
+          const staffRoleId = config.ticketStaffRole || config.staffRoleId;
+
+          if (staffRoleId) {
+            // 1. إعادة إظهار التيكت لرتبة الدعم الفني كاملة كما كانت في البداية
+            await interaction.channel.permissionOverwrites.edit(staffRoleId, {
+              ViewChannel: true
+            });
+          }
+
+          // 2. إلغاء الصلاحية المخصصة للمشرف الذي ترك التيكت ليعود كعضو إداري عادي
+          await interaction.channel.permissionOverwrites.delete(interaction.user.id);
+
+          // إرسال رسالة داخل التيكت تفيد بإلغاء الاستلام وإتاحتها للإدارة مجدداً
+          await interaction.channel.send({
+            embeds: [createEmbed({
+              title: '🔓 إلغاء استلام التيكت',
+              description: `قام المشرف ${interaction.user} بإلغاء استلام التيكت، وهي الآن متاحة لباقي فريق الدعم الفني.`,
+              color: 0xe67e22
+            })]
+          });
+
+        } catch (permError) {
+          logger.error('Error updating permissions on unclaim:', permError);
+        }
+        // ---------------------------------------------
+
         await interaction.editReply({
           embeds: [successEmbed('Ticket Unclaimed', 'You have successfully unclaimed this ticket!')],
           flags: MessageFlags.Ephemeral
@@ -689,7 +741,6 @@ const deleteTicketHandler = {
     try {
       if (!(await ensureGuildContext(interaction))) return;
 
-      // Use timeout-aware permission check
       const permissionCheck = await checkTicketPermissionWithTimeout(
         interaction,
         client,
@@ -754,7 +805,4 @@ export {
   reopenTicketHandler,
   deleteTicketHandler 
 };
-
-
-
 
