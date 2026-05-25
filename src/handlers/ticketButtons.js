@@ -346,32 +346,32 @@ const claimTicketHandler = {
       
       if (result.success) {
         try {
-          // الـ ID الصريح الخاص برتبة الإدارة والدعم في سيرفرك
+          // الـ ID الصريح والخاص برتبة الإدارة والدعم في سيرفرك
           const targetStaffRoleId = '1507846812202041485'; 
 
-          // 1. أولاً: نثبت صلاحية الإداري المستلم بالـ ID الفردي الخاص به لكي لا يفقد الرؤية مطلقاً
-          await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
-            ViewChannel: true,
-            SendMessages: true,
-            AttachFiles: true,
-            ReadMessageHistory: true
-          }).catch(err => logger.error(`فشل إعطاء صلاحية للمستلم:`, err));
+          // جلب جينات العضو صاحب التذكرة (لأننا نريد إبقائه في الروم ولا نريد حجبه)
+          // عادة يكون صاحب التذكرة مضافاً في الصلاحيات، سنحافظ عليه
+          
+          // 1. تطبيق الحجب الشامل والمباشر عبر الـ Overwrites الفردية للروم لتخطي الـ Cache
+          await interaction.channel.permissionOverwrites.set([
+            {
+              // حظر رتبة الجميع تلقائياً
+              id: interaction.guild.id,
+              deny: ['ViewChannel']
+            },
+            {
+              // قفل الروم ومنع الرؤية والإرسال تماماً لرتبة الإدارة المستهدفة (تحويلها لـ ❌ صريحة)
+              id: targetStaffRoleId,
+              deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory']
+            },
+            {
+              // إعطاء الصلاحية الخضراء الكاملة حصرياً للإداري المستلم بالـ ID
+              id: interaction.user.id,
+              allow: ['ViewChannel', 'SendMessages', 'AttachFiles', 'ReadMessageHistory', 'AddReactions']
+            }
+          ]).catch(err => logger.error(`[Overwrite Set] فشل فرض الصلاحيات الجذري:`, err));
 
-          // 2. ثانياً: حذف الصلاحية الخضراء القديمة تماماً للرتبة من الروم (اقتلاع الصلاحية المضافة عند الإنشاء)
-          await interaction.channel.permissionOverwrites.delete(targetStaffRoleId)
-            .catch(err => logger.error(`[Claim] فشل حذف الصلاحية الموروثة للرتبة:`, err));
-
-          // 3. ثالثاً: للتأكيد التام والنهائي، نضع أمر منع صارم باللون الأحمر لكي تختفي من عندهم نهائياً
-          // نضع تأخير بسيط جداً (Milisecond) للتأكد من أن ديسكورد استوعب حذف الصلاحية الخضراء أولاً
-          setTimeout(async () => {
-            await interaction.channel.permissionOverwrites.edit(targetStaffRoleId, { 
-              ViewChannel: false,
-              SendMessages: false,
-              ReadMessageHistory: false
-            }).catch(() => {});
-          }, 250);
-
-          // إرسال رسالة التأكيد بداخل الروم للجميع
+          // إرسال رسالة التأكيد بداخل الروم
           await interaction.channel.send({
             embeds: [successEmbed('🎫 تيكت مستلمة حصرية', `تم استلام التذكرة بواسطة ${interaction.user} بنجاح.\nتم حصر رؤية التيكت للمستلم وصاحب التذكرة فقط.`)]
           });
@@ -624,19 +624,19 @@ const unclaimTicketHandler = {
       
       if (result.success) {
         try {
-          // الـ ID الصريح الخاص برتبة الإدارة والدعم في سيرفرك
           const targetStaffRoleId = '1507846812202041485';
 
-          // 1. إعادة بناء الصلاحيات الخضراء الصريحة للرتبة ليعود الروم ظاهراً لكل الإدارة
-          await interaction.channel.permissionOverwrites.edit(targetStaffRoleId, { 
-            ViewChannel: true,
-            SendMessages: true,
-            AttachFiles: true,
-            ReadMessageHistory: true
-          }).catch(err => logger.error(`[Unclaim] فشل إعادة صلاحيات الرتبة الخضراء:`, err));
-          
-          // 2. مسح الصلاحية الاستثنائية الفردية للإداري الذي ترك التيكت (تنظيفاً للروم)
-          await interaction.channel.permissionOverwrites.delete(interaction.user.id).catch(() => {});
+          // إعادة بناء الأذونات لفتحها مجدداً لرتبة الإدارة وإزالة تخصيص الإداري القديم
+          await interaction.channel.permissionOverwrites.set([
+            {
+              id: interaction.guild.id,
+              deny: ['ViewChannel']
+            },
+            {
+              id: targetStaffRoleId,
+              allow: ['ViewChannel', 'SendMessages', 'AttachFiles', 'ReadMessageHistory']
+            }
+          ]).catch(err => logger.error(`[Overwrite Reset] فشل إعادة الصلاحيات للرتبة:`, err));
           
         } catch (permError) {
           logger.error('Permissions unclaim error:', permError);
