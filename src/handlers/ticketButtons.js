@@ -592,7 +592,6 @@ const pinTicketHandler = {
   }
 };
 
-// 🌟 تعديل دالة Unclaim لإرجاع رؤية الرتبة المشتركة عند ترك التذكرة
 const unclaimTicketHandler = {
   name: 'ticket_unclaim',
   async execute(interaction, client) {
@@ -628,14 +627,15 @@ const unclaimTicketHandler = {
           // الـ ID الصريح الخاص برتبة الإدارة والدعم في سيرفرك
           const targetStaffRoleId = '1507846812202041485';
 
-          // 1. إعادة إظهار الغرفة لطاقم الدعم بالكامل مجدداً بعد تركها وعودة الصلاحيات لطبيعتها
+          // 1. إعادة بناء الصلاحيات الخضراء الصريحة للرتبة ليعود الروم ظاهراً لكل الإدارة
           await interaction.channel.permissionOverwrites.edit(targetStaffRoleId, { 
             ViewChannel: true,
             SendMessages: true,
+            AttachFiles: true,
             ReadMessageHistory: true
-          }).catch(err => logger.error(`[Unclaim] فشل إعادة صلاحيات الرتبة بالـ ID:`, err));
+          }).catch(err => logger.error(`[Unclaim] فشل إعادة صلاحيات الرتبة الخضراء:`, err));
           
-          // 2. إزالة الصلاحية الفردية الاستثنائية للإداري السابق
+          // 2. مسح الصلاحية الاستثنائية الفردية للإداري الذي ترك التيكت (تنظيفاً للروم)
           await interaction.channel.permissionOverwrites.delete(interaction.user.id).catch(() => {});
           
         } catch (permError) {
@@ -668,4 +668,3 @@ const unclaimTicketHandler = {
     }
   }
 };
-          // 2. إزالة الصلاحيات الفردية للإ
