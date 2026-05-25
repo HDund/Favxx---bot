@@ -8,7 +8,7 @@ import { InteractionHelper } from '../utils/interactionHelper.js';
 import { checkRateLimit } from '../utils/rateLimiter.js';
 import { getTicketPermissionContext } from '../utils/ticketPermissions.js';
 
-// Helper function to escape HTML special characters
+// دالة مساعدة لتنظيف النصوص
 function escapeHtml(text) {
   if (!text) return '';
   return String(text)
@@ -59,7 +59,7 @@ async function checkTicketPermissionWithTimeout(interaction, client, actionLabel
   }
 }
 
-// --- Handlers Definitions ---
+// --- تعريف تفاعلات الأزرار والـ Modals ---
 
 const createTicketHandler = {
   name: 'create_ticket',
@@ -734,7 +734,7 @@ const deleteTicketHandler = {
   }
 };
 
-// --- التصدير المتوافق تماماً مع الـ Loader الخاص بالفيديو السكربت ---
+// --- التصدير المتوافق تماماً مع الـ Loader الخاص بملفات السكريبت ---
 export default [
   createTicketHandler,
   createTicketModalHandler,
