@@ -348,26 +348,30 @@ const claimTicketHandler = {
         try {
           const config = await getGuildConfig(client, interaction.guildId);
           
-          // محاولة جلب الـ ID بجميع الاحتمالات الممكنة في ملف الـ Config الخاص بك
+          // جلب الـ ID بجميع الاحتمالات الممكنة من الـ Config
           const staffRoleId = config.ticketStaffRole || config.staffRoleId || config.supportRoleId || config.staffRole; 
 
           if (staffRoleId) {
-  await interaction.channel.permissionOverwrites.edit(staffRoleId, { 
-    ViewChannel: false,
-    SendMessages: false,
-    ReadMessageHistory: false
-  }).catch(err => logger.error(`فشل حجب الرتبة ${staffRoleId}:`, err));
-}
-            // محاولة احتياطية: إذا لم يجد ID الرتبة في الـ config، يقوم بالبحث عن رتبة الإداري الذي ضغط الزر وحجبها عن بقية الأعضاء الذين يملكون نفس الرتبة
+            // 1. حجب الروم تماماً عن الرتبة المشتركة المحددة في الـ Config
+            await interaction.channel.permissionOverwrites.edit(staffRoleId, { 
+              ViewChannel: false,
+              SendMessages: false,
+              ReadMessageHistory: false
+            }).catch(err => logger.error(`فشل حجب الرتبة ${staffRoleId}:`, err));
+          } else {
+            // محاولة احتياطية: إذا لم يجد ID الرتبة في الـ config، يحجب رتبة الدعم الحالية للشخص الذي ضغط الزر
             const memberRoles = interaction.member.roles.cache;
-            // نأخذ أعلى رتبة للدعم لدى الإداري (تخطي رتبة @everyone)
             const staffRole = memberRoles.filter(r => r.id !== interaction.guildId).first();
             if (staffRole) {
-              await interaction.channel.permissionOverwrites.edit(staffRole.id, { ViewChannel: false }).catch(() => {});
+              await interaction.channel.permissionOverwrites.edit(staffRole.id, { 
+                ViewChannel: false,
+                SendMessages: false,
+                ReadMessageHistory: false
+              }).catch(() => {});
             }
           }
 
-          // 2. إعطاء الصلاحية الكاملة حصرياً للإداري الذي قام بالضغط على الزر عبر الـ ID
+          // 2. إعطاء الصلاحية الكاملة وحصرياً للإداري المستلم بالـ ID الخاص به
           await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
             ViewChannel: true,
             SendMessages: true,
@@ -375,9 +379,11 @@ const claimTicketHandler = {
             ReadMessageHistory: true
           });
 
+          // إرسال رسالة التأكيد داخل الروم
           await interaction.channel.send({
             embeds: [successEmbed('🎫 تيكت مستلمة حصرية', `تم استلام التذكرة بواسطة ${interaction.user} بنجاح.\nتم حصر رؤية التيكت للمستلم وصاحب التذكرة فقط.`)]
           });
+
         } catch (permError) {
           logger.error('Permissions claim error:', permError);
         }
