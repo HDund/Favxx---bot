@@ -348,30 +348,13 @@ const claimTicketHandler = {
         try {
           const config = await getGuildConfig(client, interaction.guildId);
           
-          // جلب الـ ID بجميع الاحتمالات الممكنة من الـ Config
-          const staffRoleId = config.ticketStaffRole || config.staffRoleId || config.supportRoleId || config.staffRole; 
+          // طباعة الإعدادات في الكونسول للتأكد من مسمى الرتبة الفعلي (للإصلاح والتحقق)
+          console.log('--- Ticket Config Staff Data ---', config);
 
-          if (staffRoleId) {
-            // 1. حجب الروم تماماً عن الرتبة المشتركة المحددة في الـ Config
-            await interaction.channel.permissionOverwrites.edit(staffRoleId, { 
-              ViewChannel: false,
-              SendMessages: false,
-              ReadMessageHistory: false
-            }).catch(err => logger.error(`فشل حجب الرتبة ${staffRoleId}:`, err));
-          } else {
-            // محاولة احتياطية: إذا لم يجد ID الرتبة في الـ config، يحجب رتبة الدعم الحالية للشخص الذي ضغط الزر
-            const memberRoles = interaction.member.roles.cache;
-            const staffRole = memberRoles.filter(r => r.id !== interaction.guildId).first();
-            if (staffRole) {
-              await interaction.channel.permissionOverwrites.edit(staffRole.id, { 
-                ViewChannel: false,
-                SendMessages: false,
-                ReadMessageHistory: false
-              }).catch(() => {});
-            }
-          }
+          // جلب الـ ID بجميع الاحتمالات الممكنة
+          const staffRoleId = config.ticketStaffRole || config.staffRoleId || config.supportRoleId || config.staffRole || config.staff_role; 
 
-          // 2. إعطاء الصلاحية الكاملة وحصرياً للإداري المستلم بالـ ID الخاص به
+          // 1. تثبيت صلاحية الإداري الذي استلم التذكرة أولاً بالـ ID لضمان عدم حجب الروم عنه
           await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
             ViewChannel: true,
             SendMessages: true,
@@ -379,9 +362,31 @@ const claimTicketHandler = {
             ReadMessageHistory: true
           });
 
-          // إرسال رسالة التأكيد داخل الروم
+          // 2. تطبيق الحجب الصارم على الرتبة المحددة بملف الإعدادات
+          if (staffRoleId && staffRoleId !== '') {
+            await interaction.channel.permissionOverwrites.edit(staffRoleId, { 
+              ViewChannel: false,
+              SendMessages: false,
+              ReadMessageHistory: false
+            }).catch(err => logger.error(`[Claim] فشل حجب الرتبة الأساسية ${staffRoleId}:`, err));
+          }
+
+          // 3. خطوة أمان إضافية قوية: حجب الروم عن كافة الرتب المشتركة التي يمتلكها طاقم الإدارة الحالي (باستثناء رتبة المستلم الفردية وبوت ديسكورد)
+          const memberRoles = interaction.member.roles.cache;
+          for (const [roleId, role] of memberRoles) {
+            // تخطي رتبة الجميع ورتبة البوت الأساسية ورتبة مخصصة مفعلة
+            if (roleId !== interaction.guildId && roleId !== staffRoleId) {
+              await interaction.channel.permissionOverwrites.edit(roleId, {
+                ViewChannel: false,
+                SendMessages: false,
+                ReadMessageHistory: false
+              }).catch(() => {});
+            }
+          }
+
+          // إرسال رسالة التاكيد
           await interaction.channel.send({
-            embeds: [successEmbed('🎫 تيكت مستلمة حصرية', `تم استلام التذكرة بواسطة ${interaction.user} بنجاح.\nتم حصر رؤية التيكت للمستلم وصاحب التذكرة فقط.`)]
+            embeds: [successEmbed('🎫 تيكت مستلمة حصرية', `تم استلام التذكرة بواسطة ${interaction.user} بنجاح.\nتم إلغاء صلاحيات الرؤية لباقي طاقم الإدارة لضمان السرية.`)]
           });
 
         } catch (permError) {
