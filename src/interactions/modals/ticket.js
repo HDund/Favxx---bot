@@ -10,7 +10,6 @@ export default {
   async execute(interaction, client) {
     try {
       if (!interaction.inGuild()) return;
-
       const deferSuccess = await InteractionHelper.safeDefer(interaction, { flags: MessageFlags.Ephemeral });
       if (!deferSuccess) return;
       
@@ -18,30 +17,15 @@ export default {
       const config = await getGuildConfig(client, interaction.guildId);
       const categoryId = config.ticketCategoryId || null;
       
-      const result = await createTicket(
-        interaction.guild,
-        interaction.member,
-        categoryId,
-        reason
-      );
+      const result = await createTicket(interaction.guild, interaction.member, categoryId, reason);
       
       if (result.success) {
-        await interaction.editReply({
-          embeds: [successEmbed(
-            'Ticket Created',
-            `Your ticket has been created in ${result.channel}!`
-          )]
-        });
+        await interaction.editReply({ embeds: [successEmbed('Ticket Created', `Your ticket has been created in ${result.channel}!`)] });
       } else {
-        await interaction.editReply({
-          embeds: [errorEmbed('Error', result.error || 'Failed to create ticket.')]
-        });
+        await interaction.editReply({ embeds: [errorEmbed('Error', result.error || 'Failed to create ticket.')] });
       }
     } catch (error) {
-      logger.error('Error creating ticket:', error);
-      await interaction.editReply({
-        embeds: [errorEmbed('Error', 'An error occurred while creating your ticket.')]
-      });
+      logger.error('Modal error:', error);
     }
   }
 };
