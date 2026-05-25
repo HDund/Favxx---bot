@@ -1,4 +1,4 @@
-import { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, AttachmentBuilder, MessageFlags } from 'discord.js';
+import { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, MessageFlags } from 'discord.js';
 import { createEmbed, errorEmbed, successEmbed } from '../utils/embeds.js';
 import { createTicket, closeTicket, claimTicket, updateTicketPriority } from '../services/ticket.js';
 import { getGuildConfig } from '../services/guildConfig.js';
@@ -23,32 +23,26 @@ async function ensureGuildContext(interaction) {
   if (interaction.inGuild()) {
     return true;
   }
-
   if (!interaction.replied && !interaction.deferred) {
     await interaction.reply({
       embeds: [errorEmbed('Guild Only', 'This action can only be used in a server.')],
       flags: MessageFlags.Ephemeral,
     });
   }
-
   return false;
 }
 
 async function checkTicketPermissionWithTimeout(interaction, client, actionLabel, options = {}, timeoutMs = 2500) {
   const { allowTicketCreator = false } = options;
-
   try {
     const contextPromise = getTicketPermissionContext({ client, interaction });
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('Timeout')), timeoutMs)
     );
-
     const context = await Promise.race([contextPromise, timeoutPromise]);
-
     if (!context.ticketData) {
       return { success: false, error: 'Not a Ticket Channel', details: 'This action can only be used in a valid ticket channel.' };
     }
-
     const allowed = allowTicketCreator ? context.canCloseTicket : context.canManageTicket;
     if (!allowed) {
       const permissionMessage = allowTicketCreator
@@ -56,7 +50,6 @@ async function checkTicketPermissionWithTimeout(interaction, client, actionLabel
         : 'You must have **Manage Channels** or the configured **Ticket Staff Role**.';
       return { success: false, error: 'Permission Denied', details: `${permissionMessage}\n\nYou cannot ${actionLabel}.` };
     }
-
     return { success: true, context };
   } catch (error) {
     if (error.message === 'Timeout') {
@@ -66,34 +59,7 @@ async function checkTicketPermissionWithTimeout(interaction, client, actionLabel
   }
 }
 
-async function ensureTicketPermission(interaction, client, actionLabel, options = {}) {
-  const { allowTicketCreator = false } = options;
-
-  const context = await getTicketPermissionContext({ client, interaction });
-
-  if (!context.ticketData) {
-    await interaction.reply({
-      embeds: [errorEmbed('Not a Ticket Channel', 'This action can only be used in a valid ticket channel.')],
-      flags: MessageFlags.Ephemeral
-    });
-    return null;
-  }
-
-  const allowed = allowTicketCreator ? context.canCloseTicket : context.canManageTicket;
-  if (!allowed) {
-    const permissionMessage = allowTicketCreator
-      ? 'You must have **Manage Channels**, the configured **Ticket Staff Role**, or be the **ticket creator**.'
-      : 'You must have **Manage Channels** or the configured **Ticket Staff Role**.';
-
-    await interaction.reply({
-      embeds: [errorEmbed('Permission Denied', `${permissionMessage}\n\nYou cannot ${actionLabel}.`)],
-      flags: MessageFlags.Ephemeral
-    });
-    return null;
-  }
-
-  return context;
-}
+// --- Handlers Definitions ---
 
 const createTicketHandler = {
   name: 'create_ticket',
@@ -242,7 +208,6 @@ const closeTicketHandler = {
       await interaction.showModal(modal);
     } catch (error) {
       logger.error('Error closing ticket:', error);
-
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
           embeds: [errorEmbed('Error', 'Could not open ticket close form.')],
@@ -343,19 +308,16 @@ const claimTicketHandler = {
       const result = await claimTicket(interaction.channel, interaction.user);
       
       if (result.success) {
-        // --- [ التعديل المتوافق مع نظام Tickety ] ---
         try {
           const config = await getGuildConfig(client, interaction.guildId);
           const staffRoleId = config.ticketStaffRole || config.staffRoleId; 
 
           if (staffRoleId) {
-            // 1. إزالة صلاحية الرؤية عن رتبة الدعم الفني كاملة
             await interaction.channel.permissionOverwrites.edit(staffRoleId, {
               ViewChannel: false
             });
           }
 
-          // 2. إعطاء الصلاحية الكاملة للإداري الذي قام بالاستلام بمفرده
           await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
             ViewChannel: true,
             SendMessages: true,
@@ -363,7 +325,6 @@ const claimTicketHandler = {
             ReadMessageHistory: true
           });
 
-          // إرسال رسالة عامة داخل قنوات التيكت تُعلم الجميع بالاستلام
           await interaction.channel.send({
             embeds: [successEmbed('🎫 تيكت مستلمة', `تم استلام هذه التيكت بواسطة ${interaction.user} ولن يتمكن باقي المشرفين من رؤيتها.`)]
           });
@@ -371,7 +332,6 @@ const claimTicketHandler = {
         } catch (permError) {
           logger.error('Error updating permissions on claim:', permError);
         }
-        // ---------------------------------------------
 
         await interaction.editReply({
           embeds: [successEmbed('Ticket Claimed', 'You have successfully claimed this ticket!')],
@@ -521,13 +481,6 @@ const pinTicketHandler = {
           })],
           flags: MessageFlags.Ephemeral
         });
-
-        logger.info('Ticket unpinned', {
-          guildId: interaction.guildId,
-          channelId: channel.id,
-          channelName: newName,
-          userId: interaction.user.id
-        });
       } else {
         const newName = `📌 ${channel.name}`;
         await channel.edit({ 
@@ -542,13 +495,6 @@ const pinTicketHandler = {
             color: 0x3498db
           })],
           flags: MessageFlags.Ephemeral
-        });
-
-        logger.info('Ticket pinned', {
-          guildId: interaction.guildId,
-          channelId: channel.id,
-          channelName: newName,
-          userId: interaction.user.id
         });
       }
 
@@ -616,22 +562,18 @@ const unclaimTicketHandler = {
       const result = await unclaimTicket(interaction.channel, interaction.member);
       
       if (result.success) {
-        // --- [ إرجاع الصلاحيات عند إلغاء الاستلام ] ---
         try {
           const config = await getGuildConfig(client, interaction.guildId);
           const staffRoleId = config.ticketStaffRole || config.staffRoleId;
 
           if (staffRoleId) {
-            // 1. إعادة إظهار التيكت لرتبة الدعم الفني كاملة كما كانت في البداية
             await interaction.channel.permissionOverwrites.edit(staffRoleId, {
               ViewChannel: true
             });
           }
 
-          // 2. إلغاء الصلاحية المخصصة للمشرف الذي ترك التيكت ليعود كعضو إداري عادي
           await interaction.channel.permissionOverwrites.delete(interaction.user.id);
 
-          // إرسال رسالة داخل التيكت تفيد بإلغاء الاستلام وإتاحتها للإدارة مجدداً
           await interaction.channel.send({
             embeds: [createEmbed({
               title: '🔓 إلغاء استلام التيكت',
@@ -643,7 +585,6 @@ const unclaimTicketHandler = {
         } catch (permError) {
           logger.error('Error updating permissions on unclaim:', permError);
         }
-        // ---------------------------------------------
 
         await interaction.editReply({
           embeds: [successEmbed('Ticket Unclaimed', 'You have successfully unclaimed this ticket!')],
@@ -793,16 +734,17 @@ const deleteTicketHandler = {
   }
 };
 
-export default createTicketHandler;
-export { 
-  createTicketModalHandler, 
+// --- التصدير المتوافق تماماً مع الـ Loader الخاص بالفيديو السكربت ---
+export default [
+  createTicketHandler,
+  createTicketModalHandler,
+  closeTicketHandler,
   closeTicketModalHandler,
-  closeTicketHandler, 
-  claimTicketHandler, 
+  claimTicketHandler,
   priorityTicketHandler,
   pinTicketHandler,
   unclaimTicketHandler,
   reopenTicketHandler,
-  deleteTicketHandler 
-};
+  deleteTicketHandler
+];
 
