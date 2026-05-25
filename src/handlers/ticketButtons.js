@@ -349,27 +349,34 @@ const claimTicketHandler = {
           // الـ ID الصريح والخاص برتبة الإدارة والدعم في سيرفرك
           const targetStaffRoleId = '1507846812202041485'; 
 
-          // جلب جينات العضو صاحب التذكرة (لأننا نريد إبقائه في الروم ولا نريد حجبه)
-          // عادة يكون صاحب التذكرة مضافاً في الصلاحيات، سنحافظ عليه
-          
-          // 1. تطبيق الحجب الشامل والمباشر عبر الـ Overwrites الفردية للروم لتخطي الـ Cache
-          await interaction.channel.permissionOverwrites.set([
-            {
-              // حظر رتبة الجميع تلقائياً
-              id: interaction.guild.id,
-              deny: ['ViewChannel']
-            },
-            {
-              // قفل الروم ومنع الرؤية والإرسال تماماً لرتبة الإدارة المستهدفة (تحويلها لـ ❌ صريحة)
-              id: targetStaffRoleId,
-              deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory']
-            },
-            {
-              // إعطاء الصلاحية الخضراء الكاملة حصرياً للإداري المستلم بالـ ID
-              id: interaction.user.id,
-              allow: ['ViewChannel', 'SendMessages', 'AttachFiles', 'ReadMessageHistory', 'AddReactions']
+          // 1. أولاً: إعطاء صلاحية خضراء صريحة للمستلم فوراً حتى لا يفقد الروم
+          await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
+            ViewChannel: true,
+            SendMessages: true,
+            AttachFiles: true,
+            ReadMessageHistory: true,
+            AddReactions: true
+          }).catch(() => {});
+
+          // 2. ثانياً: ننتظر ثانية كاملة (1000ms) حتى نتأكد أن دالة claimTicket الأصلية انتهت تماماً
+          // ثم نقوم بمسح الصلاحيات القديمة وفرض علامة الضرب الحمراء ❌ صراحةً
+          setTimeout(async () => {
+            try {
+              // مسح أي صلاحية متبقية للرتبة أولاً
+              await interaction.channel.permissionOverwrites.delete(targetStaffRoleId).catch(() => {});
+              
+              // فرض الحظر الصارم باللون الأحمر ❌
+              await interaction.channel.permissionOverwrites.edit(targetStaffRoleId, { 
+                ViewChannel: false,
+                SendMessages: false,
+                ReadMessageHistory: false
+              });
+              
+              logger.info(`[Force Block] تم إجبار تحويل رتبة الإدارة إلى علامة حمراء ❌ بنجاح.`);
+            } catch (err) {
+              logger.error(`فشل فرض الحجب المتأخر:`, err);
             }
-          ]).catch(err => logger.error(`[Overwrite Set] فشل فرض الصلاحيات الجذري:`, err));
+          }, 1000); // تأخير ثانية كاملة لضمان التفوق على الدالة القديمة
 
           // إرسال رسالة التأكيد بداخل الروم
           await interaction.channel.send({
@@ -624,19 +631,23 @@ const unclaimTicketHandler = {
       
       if (result.success) {
         try {
+          // الـ ID الصريح والخاص برتبة الإدارة والدعم في سيرفرك
           const targetStaffRoleId = '1507846812202041485';
 
-          // إعادة بناء الأذونات لفتحها مجدداً لرتبة الإدارة وإزالة تخصيص الإداري القديم
-          await interaction.channel.permissionOverwrites.set([
-            {
-              id: interaction.guild.id,
-              deny: ['ViewChannel']
-            },
-            {
-              id: targetStaffRoleId,
-              allow: ['ViewChannel', 'SendMessages', 'AttachFiles', 'ReadMessageHistory']
-            }
-          ]).catch(err => logger.error(`[Overwrite Reset] فشل إعادة الصلاحيات للرتبة:`, err));
+          // 1. مسح القفل الأحمر ❌ القديم تماماً لتنظيف الكاش بداخل ديسكورد
+          await interaction.channel.permissionOverwrites.delete(targetStaffRoleId).catch(() => {});
+
+          // 2. إعادة فرض العلامة الخضراء ✅ الصريحة ليعود الروم للظهور لجميع أفراد الإدارة
+          await interaction.channel.permissionOverwrites.edit(targetStaffRoleId, { 
+            ViewChannel: true,
+            SendMessages: true,
+            AttachFiles: true,
+            ReadMessageHistory: true,
+            AddReactions: true
+          }).catch(err => logger.error(`[Unclaim] فشل إعادة صلاحيات الرتبة الخضراء:`, err));
+          
+          // 3. مسح الصلاحية الاستثنائية الفردية للإداري الذي ترك التيكت
+          await interaction.channel.permissionOverwrites.delete(interaction.user.id).catch(() => {});
           
         } catch (permError) {
           logger.error('Permissions unclaim error:', permError);
