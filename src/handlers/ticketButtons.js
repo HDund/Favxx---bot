@@ -619,12 +619,47 @@ const unclaimTicketHandler = {
       
       if (result.success) {
         try {
-          const config = await getGuildConfig(client, interaction.guildId);
-          const staffRoleId = config.ticketStaffRole || config.staffRoleId || config.supportRoleId;
+          // الـ ID الصريح الخاص برتبة الإدارة والدعم في سيرفرك
+          const targetStaffRoleId = '1507846812202041485';
 
-          // 1. إعادة إظهار الغرفة لطاقم الدعم بالكامل مجدداً بعد تركها
-          if (staffRoleId) {
-            await interaction.channel.permissionOverwrites.edit(staffRoleId, { ViewChannel: true });
-          }
+          // 1. إعادة إظهار الغرفة لطاقم الدعم بالكامل مجدداً بعد تركها وعودة الصلاحيات لطبيعتها
+          await interaction.channel.permissionOverwrites.edit(targetStaffRoleId, { 
+            ViewChannel: true,
+            SendMessages: true,
+            ReadMessageHistory: true
+          }).catch(err => logger.error(`[Unclaim] فشل إعادة صلاحيات الرتبة بالـ ID:`, err));
           
+          // 2. إزالة الصلاحية الفردية الاستثنائية للإداري السابق
+          await interaction.channel.permissionOverwrites.delete(interaction.user.id).catch(() => {});
+          
+        } catch (permError) {
+          logger.error('Permissions unclaim error:', permError);
+        }
+
+        await interaction.editReply({
+          embeds: [successEmbed('Ticket Unclaimed', 'You have successfully unclaimed this ticket!')],
+          flags: MessageFlags.Ephemeral
+        });
+      } else {
+        await interaction.editReply({
+          embeds: [errorEmbed('Error', result.error || 'Failed to unclaim ticket.')],
+          flags: MessageFlags.Ephemeral
+        });
+      }
+    } catch (error) {
+      logger.error('Error unclaiming ticket:', error);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          embeds: [errorEmbed('Error', 'An error occurred while unclaiming the ticket.')],
+          flags: MessageFlags.Ephemeral
+        });
+      } else if (interaction.deferred) {
+        await interaction.editReply({
+          embeds: [errorEmbed('Error', 'An error occurred while unclaiming the ticket.')],
+          flags: MessageFlags.Ephemeral
+        });
+      }
+    }
+  }
+};
           // 2. إزالة الصلاحيات الفردية للإ
