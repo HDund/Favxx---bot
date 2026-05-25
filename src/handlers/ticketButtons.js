@@ -349,21 +349,27 @@ const claimTicketHandler = {
           // الـ ID الصريح الخاص برتبة الإدارة والدعم في سيرفرك
           const targetStaffRoleId = '1507846812202041485'; 
 
-          // 1. أولاً: إعطاء صلاحية استثنائية وحصرية بالـ ID للإداري الذي استلم التذكرة حتى لا يفقد الرؤية
+          // 1. أولاً: نثبت صلاحية الإداري المستلم بالـ ID الفردي الخاص به لكي لا يفقد الرؤية مطلقاً
           await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
             ViewChannel: true,
             SendMessages: true,
             AttachFiles: true,
             ReadMessageHistory: true
-          });
+          }).catch(err => logger.error(`فشل إعطاء صلاحية للمستلم:`, err));
 
-          // 2. ثانياً: حجب وقفل الروم بالكامل عن رتبة الدعم المشتركة بشكل صارم لقطع الـ Inheritance
-          await interaction.channel.permissionOverwrites.edit(targetStaffRoleId, { 
-            ViewChannel: false,
-            SendMessages: false,
-            ReadMessageHistory: false,
-            AddReactions: false
-          }).catch(err => logger.error(`[Claim] فشل حجب رتبة الإدارة بالـ ID:`, err));
+          // 2. ثانياً: حذف الصلاحية الخضراء القديمة تماماً للرتبة من الروم (اقتلاع الصلاحية المضافة عند الإنشاء)
+          await interaction.channel.permissionOverwrites.delete(targetStaffRoleId)
+            .catch(err => logger.error(`[Claim] فشل حذف الصلاحية الموروثة للرتبة:`, err));
+
+          // 3. ثالثاً: للتأكيد التام والنهائي، نضع أمر منع صارم باللون الأحمر لكي تختفي من عندهم نهائياً
+          // نضع تأخير بسيط جداً (Milisecond) للتأكد من أن ديسكورد استوعب حذف الصلاحية الخضراء أولاً
+          setTimeout(async () => {
+            await interaction.channel.permissionOverwrites.edit(targetStaffRoleId, { 
+              ViewChannel: false,
+              SendMessages: false,
+              ReadMessageHistory: false
+            }).catch(() => {});
+          }, 250);
 
           // إرسال رسالة التأكيد بداخل الروم للجميع
           await interaction.channel.send({
