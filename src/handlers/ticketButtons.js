@@ -346,15 +346,10 @@ const claimTicketHandler = {
       
       if (result.success) {
         try {
-          const config = await getGuildConfig(client, interaction.guildId);
-          
-          // طباعة الإعدادات في الكونسول للتأكد من مسمى الرتبة الفعلي (للإصلاح والتحقق)
-          console.log('--- Ticket Config Staff Data ---', config);
+          // الـ ID الصريح الخاص برتبة الإدارة والدعم في سيرفرك
+          const targetStaffRoleId = '1507846812202041485'; 
 
-          // جلب الـ ID بجميع الاحتمالات الممكنة
-          const staffRoleId = config.ticketStaffRole || config.staffRoleId || config.supportRoleId || config.staffRole || config.staff_role; 
-
-          // 1. تثبيت صلاحية الإداري الذي استلم التذكرة أولاً بالـ ID لضمان عدم حجب الروم عنه
+          // 1. أولاً: إعطاء صلاحية استثنائية وحصرية بالـ ID للإداري الذي استلم التذكرة حتى لا يفقد الرؤية
           await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
             ViewChannel: true,
             SendMessages: true,
@@ -362,31 +357,17 @@ const claimTicketHandler = {
             ReadMessageHistory: true
           });
 
-          // 2. تطبيق الحجب الصارم على الرتبة المحددة بملف الإعدادات
-          if (staffRoleId && staffRoleId !== '') {
-            await interaction.channel.permissionOverwrites.edit(staffRoleId, { 
-              ViewChannel: false,
-              SendMessages: false,
-              ReadMessageHistory: false
-            }).catch(err => logger.error(`[Claim] فشل حجب الرتبة الأساسية ${staffRoleId}:`, err));
-          }
+          // 2. ثانياً: حجب وقفل الروم بالكامل عن رتبة الدعم المشتركة بشكل صارم لقطع الـ Inheritance
+          await interaction.channel.permissionOverwrites.edit(targetStaffRoleId, { 
+            ViewChannel: false,
+            SendMessages: false,
+            ReadMessageHistory: false,
+            AddReactions: false
+          }).catch(err => logger.error(`[Claim] فشل حجب رتبة الإدارة بالـ ID:`, err));
 
-          // 3. خطوة أمان إضافية قوية: حجب الروم عن كافة الرتب المشتركة التي يمتلكها طاقم الإدارة الحالي (باستثناء رتبة المستلم الفردية وبوت ديسكورد)
-          const memberRoles = interaction.member.roles.cache;
-          for (const [roleId, role] of memberRoles) {
-            // تخطي رتبة الجميع ورتبة البوت الأساسية ورتبة مخصصة مفعلة
-            if (roleId !== interaction.guildId && roleId !== staffRoleId) {
-              await interaction.channel.permissionOverwrites.edit(roleId, {
-                ViewChannel: false,
-                SendMessages: false,
-                ReadMessageHistory: false
-              }).catch(() => {});
-            }
-          }
-
-          // إرسال رسالة التاكيد
+          // إرسال رسالة التأكيد بداخل الروم للجميع
           await interaction.channel.send({
-            embeds: [successEmbed('🎫 تيكت مستلمة حصرية', `تم استلام التذكرة بواسطة ${interaction.user} بنجاح.\nتم إلغاء صلاحيات الرؤية لباقي طاقم الإدارة لضمان السرية.`)]
+            embeds: [successEmbed('🎫 تيكت مستلمة حصرية', `تم استلام التذكرة بواسطة ${interaction.user} بنجاح.\nتم حصر رؤية التيكت للمستلم وصاحب التذكرة فقط.`)]
           });
 
         } catch (permError) {
