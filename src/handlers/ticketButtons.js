@@ -314,6 +314,7 @@ const closeTicketModalHandler = {
 };
 
 // 🌟 تعديل ميزة الاستلام لتصبح حصرية وتلغي رتبة السبورت المشتركة
+// 🌟 تعديل ميزة الاستلام لتصبح حصرية وتلغي رتبة السبورت المشتركة بذكاء أعلى
 const claimTicketHandler = {
   name: 'ticket_claim',
   async execute(interaction, client) {
@@ -346,11 +347,23 @@ const claimTicketHandler = {
       if (result.success) {
         try {
           const config = await getGuildConfig(client, interaction.guildId);
-          const staffRoleId = config.ticketStaffRole || config.staffRoleId || config.supportRoleId; 
+          
+          // محاولة جلب الـ ID بجميع الاحتمالات الممكنة في ملف الـ Config الخاص بك
+          const staffRoleId = config.ticketStaffRole || config.staffRoleId || config.supportRoleId || config.staffRole; 
 
           // 1. إخفاء غرفه التيكت فوراً عن رتبة الدعم المشتركة بالكامل لمنع التداخل
           if (staffRoleId) {
-            await interaction.channel.permissionOverwrites.edit(staffRoleId, { ViewChannel: false });
+            await interaction.channel.permissionOverwrites.edit(staffRoleId, { 
+              ViewChannel: false 
+            }).catch(err => logger.error(`فشل حجب الرتبة ${staffRoleId}:`, err));
+          } else {
+            // محاولة احتياطية: إذا لم يجد ID الرتبة في الـ config، يقوم بالبحث عن رتبة الإداري الذي ضغط الزر وحجبها عن بقية الأعضاء الذين يملكون نفس الرتبة
+            const memberRoles = interaction.member.roles.cache;
+            // نأخذ أعلى رتبة للدعم لدى الإداري (تخطي رتبة @everyone)
+            const staffRole = memberRoles.filter(r => r.id !== interaction.guildId).first();
+            if (staffRole) {
+              await interaction.channel.permissionOverwrites.edit(staffRole.id, { ViewChannel: false }).catch(() => {});
+            }
           }
 
           // 2. إعطاء الصلاحية الكاملة حصرياً للإداري الذي قام بالضغط على الزر عبر الـ ID
