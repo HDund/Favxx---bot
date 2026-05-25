@@ -15,11 +15,6 @@ import { logTicketEvent } from '../utils/ticketLogging.js';
 import { BotConfig } from '../config/bot.js';
 import { ensureTypedServiceError } from '../utils/serviceErrorBoundary.js';
 
-
-
-
-
-
 function getPriorityMap() {
   const priorities = BotConfig.tickets?.priorities || {
     none: { emoji: "⚪", color: "#95A5A6", label: "None" },
@@ -45,8 +40,15 @@ const PRIORITY_MAP = getPriorityMap();
 const TICKET_DELETE_DELAY_MS = 3000;
 const TICKET_DELETE_DELAY_SECONDS = Math.floor(TICKET_DELETE_DELAY_MS / 1000);
 
-
-
+// دالة جلب الـ ID القادم للتذكرة (تأكد من وجودها بملفك أو جلبها من قاعدة البيانات)
+async function getNextTicketNumber(guildId) {
+  try {
+    return await incrementTicketCounter(guildId);
+  } catch (error) {
+    logger.error('Error getting next ticket number:', error);
+    return Math.floor(1000 + Math.random() * 9000);
+  }
+}
 
 export async function getUserTicketCount(guildId, userId) {
   try {
@@ -105,7 +107,6 @@ export async function createTicket(guild, member, categoryId, reason = 'No reaso
     }
     
     const ticketNumber = await getNextTicketNumber(guild.id);
-    
     let channelName = `ticket-${ticketNumber}`;
     
     if (priority !== 'none') {
@@ -305,7 +306,6 @@ export async function closeTicket(channel, closer, reason = 'No reason provided'
 
           await ticketCreator.send({ embeds: [dmEmbed] });
 
-          // Post-close feedback survey — separate DM message so it can be updated on submit
           try {
             const feedbackEmbed = createEmbed({
               title: '⭐ How was your support experience?',
@@ -388,7 +388,7 @@ export async function closeTicket(channel, closer, reason = 'No reason provided'
       
       await ticketMessage.edit({ 
         embeds: [updatedEmbed],
-components: []
+        components: []
       });
     }
     
@@ -457,6 +457,7 @@ components: []
   }
 }
 
+// 🔥 [دالة الاستلام المحدثة والجذرية لمنع الكاش وتثبيت القفل الأحمر ❌]
 export async function claimTicket(channel, claimer) {
   try {
     const ticketData = await getTicketData(channel.guild.id, channel.id);
@@ -475,6 +476,34 @@ export async function claimTicket(channel, claimer) {
     ticketData.claimedAt = new Date().toISOString();
     
     await saveTicketData(channel.guild.id, channel.id, ticketData);
+
+    try {
+      const config = await getGuildConfig(channel.client, channel.guild.id);
+      const targetStaffRoleId = config.ticketStaffRoleId || '1507846812202041485';
+
+      // 1. تثبيت رؤية الإداري المستلم بالـ ID الفردي لضمان عدم حظر نفسه
+      await channel.permissionOverwrites.edit(claimer.id, {
+        ViewChannel: true,
+        SendMessages: true,
+        AttachFiles: true,
+        ReadMessageHistory: true,
+        AddReactions: true
+      });
+
+      // 2. تدمير وإزالة الجدول القديم الصادر عن دالة الإنشاء لرتبة الإدارة
+      await channel.permissionOverwrites.delete(targetStaffRoleId).catch(() => {});
+
+      // 3. فرض علامة الضرب الحمراء ❌ صراحة لتقوم باختفاء القناة فوراً من باقي طاقم الدعم
+      await channel.permissionOverwrites.edit(targetStaffRoleId, {
+        ViewChannel: false,
+        SendMessages: false,
+        ReadMessageHistory: false
+      });
+
+      logger.info(`[Service Claim] Permissions forced to RED X for role ${targetStaffRoleId}`);
+    } catch (permError) {
+      logger.error('Failed to update claim permissions in ticket service:', permError);
+    }
     
     const messages = await channel.messages.fetch();
     const ticketMessage = messages.find(m => 
@@ -569,6 +598,143 @@ export async function claimTicket(channel, claimer) {
       guildId: channel?.guild?.id,
       channelId: channel?.id,
       userId: claimer?.id,
+      error: typedError.message,
+      errorCode: typedError.context?.errorCode
+    });
+    return { 
+      success: false, 
+      error: typedError.userMessage || typedError.message,
+      errorCode: typedError.context?.errorCode
+    };
+  }
+}
+
+// 🔥 [دالة إلغاء الاستلام المضافة والكاملة لإعادة علامة الصح الخضراء ✅ لجميع أفراد الإدارة]
+export async function unclaimTicket(channel, member) {
+  try {
+    const ticketData = await getTicketData(channel.guild.id, channel.id);
+    if (!ticketData) {
+      return { success: false, error: 'This is not a ticket channel' };
+    }
+
+    if (!ticketData.claimedBy) {
+      return { success: false, error: 'This ticket is not currently claimed by anyone.' };
+    }
+
+    ticketData.claimedBy = null;
+    ticketData.claimedAt = null;
+    
+    await saveTicketData(channel.guild.id, channel.id, ticketData);
+
+    try {
+      const config = await getGuildConfig(channel.client, channel.guild.id);
+      const targetStaffRoleId = config.ticketStaffRoleId || '1507846812202041485';
+
+      // 1. مسح الحظر الأحمر ❌ تماماً لتنظيف الـ Cache الخاص بالروم
+      await channel.permissionOverwrites.delete(targetStaffRoleId).catch(() => {});
+
+      // 2. فرض الأذونات الخضراء ✅ مجدداً ليعود الروم للظهور لجميع طاقم الدعم
+      await channel.permissionOverwrites.edit(targetStaffRoleId, { 
+        ViewChannel: true,
+        SendMessages: true,
+        AttachFiles: true,
+        ReadMessageHistory: true,
+        AddReactions: true
+      });
+      
+      // 3. مسح الأذونات الاستثنائية الخاصة بحساب الإداري الفردي الذي ترك التيكت
+      await channel.permissionOverwrites.delete(member.id).catch(() => {});
+
+      logger.info(`[Service Unclaim] Permissions completely restored to Green Check for role ${targetStaffRoleId}`);
+    } catch (permError) {
+      logger.error('Failed to update unclaim permissions in ticket service:', permError);
+    }
+
+    const messages = await channel.messages.fetch();
+    const ticketMessage = messages.find(m => 
+      m.embeds.length > 0 && 
+      m.embeds[0].title?.startsWith('Ticket #')
+    );
+    
+    if (ticketMessage) {
+      const embed = ticketMessage.embeds[0];
+      const claimedField = embed.fields?.find(f => f.name === 'Claimed By');
+      
+      if (claimedField) {
+        claimedField.value = 'Not claimed';
+      }
+      
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('ticket_close')
+          .setLabel('Close Ticket')
+          .setStyle(ButtonStyle.Danger)
+          .setEmoji('🔒'),
+        new ButtonBuilder()
+          .setCustomId('ticket_claim')
+          .setLabel('Claim')
+          .setStyle(ButtonStyle.Primary)
+          .setEmoji('🙋')
+          .setDisabled(false),
+        new ButtonBuilder()
+          .setCustomId('ticket_pin')
+          .setLabel('Pin')
+          .setStyle(ButtonStyle.Secondary)
+          .setEmoji('📌')
+      );
+      
+      await ticketMessage.edit({ 
+        embeds: [embed],
+        components: [row] 
+      });
+    }
+
+    const unclaimEmbed = createEmbed({
+      title: 'Ticket Unclaimed',
+      description: `🔓 ${member.user} has unclaimed this ticket. It is now open for other staff members.`,
+      color: '#f1c40f'
+    });
+
+    const claimStatusMessage = messages.find(m =>
+      m.embeds.length > 0 &&
+      (m.embeds[0].title === 'Ticket Claimed' || m.embeds[0].title === 'Ticket Unclaimed')
+    );
+
+    if (claimStatusMessage) {
+      await claimStatusMessage.edit({ embeds: [unclaimEmbed], components: [] });
+    } else {
+      await channel.send({ embeds: [unclaimEmbed] });
+    }
+
+    await logTicketEvent({
+      client: channel.client,
+      guildId: channel.guild.id,
+      event: {
+        type: 'unclaim',
+        ticketId: channel.id,
+        ticketNumber: ticketData.id,
+        userId: ticketData.userId,
+        executorId: member.id,
+        metadata: {
+          unclaimedAt: new Date().toISOString()
+        }
+      }
+    });
+
+    return { success: true, ticketData };
+
+  } catch (error) {
+    const typedError = ensureTypedServiceError(error, {
+      service: 'ticketService',
+      operation: 'unclaimTicket',
+      message: 'Ticket operation failed: unclaimTicket',
+      userMessage: 'Failed to unclaim ticket. Please try again in a moment.',
+      context: { guildId: channel?.guild?.id, channelId: channel?.id, memberId: member?.id }
+    });
+    logger.error('Error unclaiming ticket:', {
+      guildId: channel?.guild?.id,
+      channelId: channel?.id,
+      userId: member?.id,
       error: typedError.message,
       errorCode: typedError.context?.errorCode
     });
@@ -726,17 +892,6 @@ export async function reopenTicket(channel, reopener) {
   }
 }
 
-// Helper function to escape HTML special characters
-function escapeHtml(text) {
-  if (!text) return '';
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
 async function generateTranscript(channel) {
   try {
     logger.debug('Generating transcript for channel', {
@@ -744,7 +899,6 @@ async function generateTranscript(channel) {
       channelName: channel.name
     });
 
-    // Fetch all messages by paginating
     const messages = [];
     let before = undefined;
     let batch;
@@ -854,7 +1008,6 @@ export async function deleteTicket(channel, deleter) {
       }
     });
 
-    // Generate and send transcript if transcript channel is configured
     setTimeout(async () => {
       try {
         logger.debug('Starting ticket deletion process', {
@@ -862,17 +1015,11 @@ export async function deleteTicket(channel, deleter) {
           ticketId: ticketData.id
         });
 
-        // Generate transcript
         let attachment = null;
         try {
           attachment = await generateTranscript(channel);
           if (attachment) {
             logger.info('Transcript generated successfully, attempting to send', {
-              channelId: channel.id,
-              ticketNumber: ticketData.id
-            });
-          } else {
-            logger.warn('Transcript generation returned null', {
               channelId: channel.id,
               ticketNumber: ticketData.id
             });
@@ -885,30 +1032,13 @@ export async function deleteTicket(channel, deleter) {
           });
         }
 
-        // Send transcript to configured channel if it was generated
         if (attachment) {
           try {
             const guildConfig = await getGuildConfig(channel.client, channel.guild.id);
-            if (!guildConfig.ticketTranscriptChannelId) {
-              logger.warn('No transcript channel configured, skipping transcript send', {
-                channelId: channel.id,
-                ticketNumber: ticketData.id
-              });
-            } else {
+            if (guildConfig.ticketTranscriptChannelId) {
               const transcriptChannel = await channel.client.channels.fetch(guildConfig.ticketTranscriptChannelId).catch(() => null);
               
-              if (!transcriptChannel) {
-                logger.error('Could not fetch transcript channel', {
-                  channelId: channel.id,
-                  transcriptChannelId: guildConfig.ticketTranscriptChannelId
-                });
-              } else if (!transcriptChannel.isSendable()) {
-                logger.error('Transcript channel exists but is not sendable', {
-                  channelId: channel.id,
-                  transcriptChannelId: transcriptChannel.id
-                });
-              } else {
-                // Send transcript with embed
+              if (transcriptChannel && transcriptChannel.isSendable()) {
                 const transcriptEmbed = new EmbedBuilder()
                   .setTitle('📜 Ticket Transcript')
                   .setDescription(`Transcript for ticket #${ticketData.id}`)
@@ -930,12 +1060,6 @@ export async function deleteTicket(channel, deleter) {
                   embeds: [transcriptEmbed],
                   files: [attachment]
                 });
-
-                logger.info('✅ Transcript sent successfully', {
-                  channelId: channel.id,
-                  ticketNumber: ticketData.id,
-                  transcriptChannelId: transcriptChannel.id
-                });
               }
             }
           } catch (sendError) {
@@ -947,299 +1071,16 @@ export async function deleteTicket(channel, deleter) {
           }
         }
 
-        // Delete the channel (regardless of transcript success)
-        try {
-          await channel.delete('Ticket deleted permanently');
-          logger.info('✅ Channel deleted', {
-            channelId: channel.id,
-            channelName: channel.name,
-            ticketNumber: ticketData.id
-          });
-        } catch (deleteError) {
-          logger.error('❌ Failed to delete ticket channel:', {
-            channelId: channel.id,
-            channelName: channel.name,
-            ticketNumber: ticketData.id,
-            errorMessage: deleteError.message,
-            errorCode: deleteError.code,
-            errorName: deleteError.name
-          });
-        }
-      } catch (error) {
-        logger.error('❌ Unexpected error during ticket deletion:', {
-          channelId: channel.id,
-          channelName: channel?.name,
-          ticketNumber: ticketData?.id,
-          errorMessage: error.message,
-          errorName: error.name,
-          errorStack: error.stack
-        });
+        await channel.delete('Ticket deleted permanently');
+        await deleteTicketData(channel.guild.id, channel.id).catch(() => {});
+        logger.info('✅ Channel and Database data deleted successfully');
+      } catch (err) {
+        logger.error('Error in delayed delete execution:', err);
       }
     }, TICKET_DELETE_DELAY_MS);
-    
-    return { success: true, ticketData };
-    
+
+    return { success: true };
   } catch (error) {
-    const typedError = ensureTypedServiceError(error, {
-      service: 'ticketService',
-      operation: 'deleteTicket',
-      message: 'Ticket operation failed: deleteTicket',
-      userMessage: 'Failed to delete ticket. Please try again in a moment.',
-      context: { guildId: channel?.guild?.id, channelId: channel?.id, deleterId: deleter?.id }
-    });
-    logger.error('Error deleting ticket:', {
-      guildId: channel?.guild?.id,
-      channelId: channel?.id,
-      userId: deleter?.id,
-      error: typedError.message,
-      errorCode: typedError.context?.errorCode
-    });
-    return { 
-      success: false, 
-      error: typedError.userMessage || typedError.message,
-      errorCode: typedError.context?.errorCode
-    };
+    return { success: false, error: error.message };
   }
 }
-
-export async function unclaimTicket(channel, unclaimer) {
-  try {
-    const ticketData = await getTicketData(channel.guild.id, channel.id);
-    if (!ticketData) {
-      return { success: false, error: 'This is not a ticket channel' };
-    }
-    
-    if (!ticketData.claimedBy) {
-      return { 
-        success: false, 
-        error: 'This ticket is not currently claimed' 
-      };
-    }
-    
-    if (ticketData.claimedBy !== unclaimer.id && !unclaimer.permissions.has(PermissionFlagsBits.ManageChannels)) {
-      return { 
-        success: false, 
-        error: 'You can only unclaim your own tickets or need Manage Channels permission.' 
-      };
-    }
-    
-    const previousClaimer = ticketData.claimedBy;
-    ticketData.claimedBy = null;
-    ticketData.claimedAt = null;
-    
-    await saveTicketData(channel.guild.id, channel.id, ticketData);
-    
-    const messages = await channel.messages.fetch();
-    const ticketMessage = messages.find(m => 
-      m.embeds.length > 0 && 
-      m.embeds[0].title?.startsWith('Ticket #')
-    );
-    
-    if (ticketMessage) {
-      const embed = ticketMessage.embeds[0];
-      const claimedField = embed.fields?.find(f => f.name === 'Claimed By');
-      
-      if (claimedField) {
-        claimedField.value = 'Not claimed';
-      }
-      
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('ticket_close')
-          .setLabel('Close Ticket')
-          .setStyle(ButtonStyle.Danger)
-          .setEmoji('🔒'),
-        new ButtonBuilder()
-          .setCustomId('ticket_claim')
-          .setLabel('Claim')
-          .setStyle(ButtonStyle.Primary)
-          .setEmoji('🙋'),
-        new ButtonBuilder()
-          .setCustomId('ticket_pin')
-          .setLabel('Pin')
-          .setStyle(ButtonStyle.Secondary)
-          .setEmoji('📌')
-      );
-      
-      await ticketMessage.edit({ 
-        embeds: [embed],
-        components: [row] 
-      });
-    }
-    
-    const claimMessage = messages.find(m => 
-      m.embeds.length > 0 && 
-      (m.embeds[0].title === 'Ticket Claimed' || m.embeds[0].title === 'Ticket Unclaimed')
-    );
-    
-    if (claimMessage) {
-      const unclaimEmbed = createEmbed({
-        title: 'Ticket Unclaimed',
-        description: `🔓 ${unclaimer} has unclaimed this ticket!`,
-        color: '#f39c12'
-      });
-      
-      await claimMessage.edit({ 
-        embeds: [unclaimEmbed],
-        components: []
-      });
-    } else {
-      const unclaimEmbed = createEmbed({
-        title: 'Ticket Unclaimed',
-        description: `🔓 ${unclaimer} has unclaimed this ticket!`,
-        color: '#f39c12'
-      });
-      
-      await channel.send({ embeds: [unclaimEmbed] });
-    }
-    
-    await logTicketEvent({
-      client: channel.client,
-      guildId: channel.guild.id,
-      event: {
-        type: 'unclaim',
-        ticketId: channel.id,
-        ticketNumber: ticketData.id,
-        userId: ticketData.userId,
-        executorId: unclaimer.id,
-        metadata: {
-          previousClaimer: previousClaimer
-        }
-      }
-    });
-    
-    return { success: true, ticketData };
-    
-  } catch (error) {
-    const typedError = ensureTypedServiceError(error, {
-      service: 'ticketService',
-      operation: 'unclaimTicket',
-      message: 'Ticket operation failed: unclaimTicket',
-      userMessage: 'Failed to unclaim ticket. Please try again in a moment.',
-      context: { guildId: channel?.guild?.id, channelId: channel?.id, unclaimerId: unclaimer?.id }
-    });
-    logger.error('Error unclaiming ticket:', {
-      guildId: channel?.guild?.id,
-      channelId: channel?.id,
-      userId: unclaimer?.id,
-      error: typedError.message,
-      errorCode: typedError.context?.errorCode
-    });
-    return { 
-      success: false, 
-      error: typedError.userMessage || typedError.message,
-      errorCode: typedError.context?.errorCode
-    };
-  }
-}
-
-async function getNextTicketNumber(guildId) {
-  return await incrementTicketCounter(guildId);
-}
-
-export async function updateTicketPriority(channel, priority, updater) {
-  try {
-    const ticketData = await getTicketData(channel.guild.id, channel.id);
-    if (!ticketData) {
-      return { success: false, error: 'This is not a ticket channel' };
-    }
-    
-    const priorityInfo = PRIORITY_MAP[priority];
-    if (!priorityInfo) {
-      return { success: false, error: 'Invalid priority level' };
-    }
-    
-    ticketData.priority = priority;
-    ticketData.priorityUpdatedBy = updater.id;
-    ticketData.priorityUpdatedAt = new Date().toISOString();
-    
-    await saveTicketData(channel.guild.id, channel.id, ticketData);
-
-    const currentName = channel.name;
-    const priorityEmojis = [...new Set(Object.values(PRIORITY_MAP).map((item) => item.emoji).filter(Boolean))];
-    const escapedPriorityEmojis = priorityEmojis.map((emoji) => emoji.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    const cleanName = escapedPriorityEmojis.length > 0
-      ? currentName.replace(new RegExp(`(?:${escapedPriorityEmojis.join('|')})`, 'g'), '').trim()
-      : currentName.trim();
-    const newName = priority === 'none' ? cleanName : `${priorityInfo.emoji} ${cleanName}`;
-
-    if (newName && newName !== currentName) {
-      try {
-        await channel.setName(newName);
-      } catch (nameError) {
-        logger.warn(`Could not update channel name for priority: ${nameError.message}`);
-      }
-    }
-    
-    const messages = await channel.messages.fetch();
-    const ticketMessage = messages.find(m => 
-      m.embeds.length > 0 && 
-      m.embeds[0].title?.startsWith('Ticket #')
-    );
-    
-    if (ticketMessage) {
-      const embed = ticketMessage.embeds[0];
-      
-      const updatedEmbed = createEmbed({
-        title: embed.title || 'Ticket',
-        description: embed.description?.split('\n**Priority:**')[0] + `\n**Priority:** ${priorityInfo.emoji} ${priorityInfo.label}`,
-        color: priorityInfo.color,
-        fields: embed.fields || [],
-        footer: embed.footer
-      });
-      
-      await ticketMessage.edit({ embeds: [updatedEmbed] });
-    }
-    
-    const updateEmbed = createEmbed({
-      title: 'Priority Updated',
-      description: `📊 Ticket priority updated to **${priorityInfo.emoji} ${priorityInfo.label}** by ${updater}`,
-      color: priorityInfo.color
-    });
-    
-    await channel.send({ embeds: [updateEmbed] });
-    
-    await logTicketEvent({
-      client: channel.client,
-      guildId: channel.guild.id,
-      event: {
-        type: 'priority',
-        ticketId: channel.id,
-        ticketNumber: ticketData.id,
-        userId: ticketData.userId,
-        executorId: updater.id,
-        priority: priority,
-        metadata: {
-          previousPriority: ticketData.priority,
-          updatedAt: ticketData.priorityUpdatedAt
-        }
-      }
-    });
-    
-    return { success: true, ticketData };
-    
-  } catch (error) {
-    const typedError = ensureTypedServiceError(error, {
-      service: 'ticketService',
-      operation: 'updateTicketPriority',
-      message: 'Ticket operation failed: updateTicketPriority',
-      userMessage: 'Failed to update ticket priority. Please try again in a moment.',
-      context: { guildId: channel?.guild?.id, channelId: channel?.id, updaterId: updater?.id, priority }
-    });
-    logger.error('Error updating ticket priority:', {
-      guildId: channel?.guild?.id,
-      channelId: channel?.id,
-      userId: updater?.id,
-      error: typedError.message,
-      errorCode: typedError.context?.errorCode
-    });
-    return { 
-      success: false, 
-      error: typedError.userMessage || typedError.message,
-      errorCode: typedError.context?.errorCode
-    };
-  }
-}
-
-
-
