@@ -33,7 +33,12 @@ export default {
                 return await handleWarningsCommand(message, client);
             }
 
-            // 4. معالجة نظام المستويات ونقاط الخبرة للرسائل العادية
+            // 4. فحص أمر نقل التحذيرات (نقل)
+            if (message.content.startsWith('نقل ')) {
+                return await handleImportCommand(message, client);
+            }
+
+            // 5. معالجة نظام المستويات ونقاط الخبرة للرسائل العادية
             await handleLeveling(message, client);
 
         } catch (error) {
@@ -157,7 +162,7 @@ async function handleUnwarnCommand(message, client) {
 }
 
 // ==========================================
-// [الأمر ملف]: استعراض سجل العضو الإداري المربوط بالدوال الحقيقية
+// [الأمر ملف]: استعراض سجل العضو الإداري
 // ==========================================
 async function handleWarningsCommand(message, client) {
     try {
@@ -168,7 +173,6 @@ async function handleWarningsCommand(message, client) {
         const targetUser = message.mentions.users.first() || await client.users.fetch(targetId).catch(() => message.author);
         const guildId = message.guild.id;
 
-        // جلب التحذيرات الحقيقية باستخدام الميثود المعتمدة في بوتك
         const warnings = await WarningService.getWarnings(guildId, targetUser.id);
         const totalWarns = warnings.length;
 
@@ -197,6 +201,36 @@ async function handleWarningsCommand(message, client) {
 
     } catch (error) {
         logger.error('Error in handleWarningsCommand:', error);
+    }
+}
+
+// ==========================================
+// [الأمر نقل]: لنقل تحذير من برو بوت يدوياً
+// ==========================================
+async function handleImportCommand(message, client) {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
+    
+    const args = message.content.trim().split(/\s+/);
+    args.shift(); // إزالة كلمة "نقل"
+    
+    const targetUser = message.mentions.users.first();
+    const reason = args.slice(1).join(' ') || 'تحذير منقول من برو بوت';
+    
+    if (!targetUser) {
+        return message.reply({ embeds: [errorEmbed('خطأ', 'الرجاء منشن العضو لنقل التحذير إليه.')] });
+    }
+
+    const result = await WarningService.addWarning({
+        guildId: message.guild.id,
+        userId: targetUser.id,
+        moderatorId: message.author.id,
+        reason: `[Imported] ${reason}`
+    });
+
+    if (result.success) {
+        message.reply({ embeds: [successEmbed('تم النقل', `✅ تم نقل التحذير للعضو ${targetUser.tag} بنجاح!\n**السبب:** ${reason}`)] });
+    } else {
+        message.reply({ embeds: [errorEmbed('خطأ', 'فشل حفظ التحذير في قاعدة البيانات.')] });
     }
 }
 
