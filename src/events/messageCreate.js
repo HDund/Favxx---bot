@@ -4,7 +4,7 @@ import { getLevelingConfig, getUserLevelData } from '../services/leveling.js';
 import { addXp } from '../services/xpSystem.js';
 import { checkRateLimit } from '../utils/rateLimiter.js';
 
-// استيراد السرفيس واللوج والتنسيق المتوافق مع مشروعك 100%
+// استيراد التنسيقات واللوج والسيرفيس المحدث
 import { errorEmbed, successEmbed, infoEmbed } from '../utils/embeds.js';
 import { logModerationAction } from '../utils/moderation.js';
 import { WarningService } from '../services/warningService.js';
@@ -16,20 +16,19 @@ export default {
     name: Events.MessageCreate,
     async execute(message, client) {
         try {
-            // تجاهل رسائل البوتات والرسائل خارج السيرفرات
             if (message.author.bot || !message.guild) return;
 
-            // 1. فحص أمر التحذير السريع (ت)
+            // 1. فحص أمر التحذير (ت)
             if (message.content.startsWith('ت ')) {
                 return await handleWarnCommand(message, client);
             }
 
-            // 2. فحص أمر إلغاء التحذير السريع (شيل)
+            // 2. فحص أمر إلغاء التحذير (شيل)
             if (message.content.startsWith('شيل ')) {
                 return await handleUnwarnCommand(message, client);
             }
 
-            // 3. فحص أمر عرض ملف التحذيرات السريع (ملف)
+            // 3. فحص أمر عرض ملف التحذيرات (ملف)
             if (message.content.trim().startsWith('ملف')) {
                 return await handleWarningsCommand(message, client);
             }
@@ -44,7 +43,7 @@ export default {
 };
 
 // ==========================================
-// [1] دالة أمر التحذير (ت @user السبب)
+// [الأمر ت]: إعطاء تحذير سريع
 // ==========================================
 async function handleWarnCommand(message, client) {
     try {
@@ -53,47 +52,44 @@ async function handleWarnCommand(message, client) {
         }
 
         const args = message.content.trim().split(/\s+/);
-        args.shift(); // إزالة "ت"
+        args.shift(); 
 
         const targetId = args[0]?.replace(/[<@!>]/g, '');
         const targetUser = message.mentions.users.first() || await client.users.fetch(targetId).catch(() => null);
         
         if (!targetUser) {
-            return message.reply({ embeds: [errorEmbed('خطأ في الأمر', 'الرجاء منشن العضو أو كتابة الـ ID بعد حرف التاء.\nمثال: `ت @user سب`')] });
+            return message.reply({ embeds: [errorEmbed('خطأ في الأمر', 'الرجاء منشن العضو أو كتابة الـ ID الخاص به.\nمثال: `ت @user سب وشتم`')] });
         }
 
         if (targetUser.bot || targetUser.id === message.author.id) {
-            return message.reply({ embeds: [errorEmbed('خطأ', 'لا يمكنك تحذير البوتات أو نفسك.')] });
+            return message.reply({ embeds: [errorEmbed('خطأ', 'لا يمكنك تحذير البوتات أو تحذير نفسك.')] });
         }
 
         const reason = args.slice(1).join(' ') || 'لم يتم تحديد سبب.';
         const guildId = message.guild.id;
 
-        // إدخال التحذير في قاعدة البيانات عبر السرفيس الخاص بك
         const result = await WarningService.addWarning({
             guildId,
-            userId: targetId,
+            userId: targetUser.id,
             moderatorId: message.author.id,
             reason,
             timestamp: Date.now()
         });
 
         if (!result || !result.success) {
-            return message.reply({ embeds: [errorEmbed('خطأ في قاعدة البيانات', 'فشل في حفظ التحذير داخل قاعدة البيانات.')] });
+            return message.reply({ embeds: [errorEmbed('خطأ', 'فشل حفظ التحذير في قاعدة البيانات.')] });
         }
 
         const totalWarns = result.totalCount;
 
-        // إرسال رسالة في الخاص للمخالف تنبهه
         try {
-            const dmEmbed = errorEmbed(`تحذير جديد في سيرفر ${message.guild.name}`, `لقد تلقيت تحذيراً بسبب: **${reason}**\nإجمالي تحذيراتك الحالية: **${totalWarns}**`)
+            const dmEmbed = errorEmbed(`⚠️ تحذير جديد في سيرفر ${message.guild.name}`, `لقد تلقيت تحذيراً بسبب: **${reason}**\nإجمالي تحذيراتك الحالية: **${totalWarns}**`)
                 .setFooter({ text: `المشرف المسؤول: ${message.author.username}` });
             await targetUser.send({ embeds: [dmEmbed] });
         } catch {
-            logger.warn(`[Prefix Warn] Could not send DM to ${targetUser.id}`);
+            logger.warn(`[Prefix Warn] Could not send DM to ${targetUser.id} (DMs closed).`);
         }
 
-        // تسجيل الأكشن في الروم المخصص للوجات عبر نظامك المعتمد
         await logModerationAction({
             client,
             guild: message.guild,
@@ -102,25 +98,18 @@ async function handleWarnCommand(message, client) {
                 target: `${targetUser.tag} (${targetUser.id})`,
                 executor: `${message.author.tag} (${message.author.id})`,
                 reason,
-                metadata: {
-                    userId: targetUser.id,
-                    moderatorId: message.author.id,
-                    totalWarns,
-                    warningNumber: totalWarns,
-                    warningId: result.id
-                }
+                metadata: { userId: targetUser.id, moderatorId: message.author.id, totalWarns, warningId: result.id }
             }
         });
 
         return message.reply({ embeds: [successEmbed('تم التحذير بنجاح', `تم إعطاء تحذير لـ **${targetUser.tag}**.\n**السبب:** ${reason}\n**إجمالي التحذيرات:** ${totalWarns}`)] });
     } catch (error) {
-        logger.error('Error in Quick handleWarnCommand:', error);
-        return message.reply({ embeds: [errorEmbed('خطأ داخلي', 'حدث خطأ أثناء محاولة تنفيذ أمر التحذير.')] });
+        logger.error('Error in handleWarnCommand:', error);
     }
 }
 
 // ==========================================
-// [2] دالة أمر إلغاء التحذير (شيل @user)
+// [الأمر شيل]: حذف آخر تحذير نشط تلقائياً
 // ==========================================
 async function handleUnwarnCommand(message, client) {
     try {
@@ -129,29 +118,27 @@ async function handleUnwarnCommand(message, client) {
         }
 
         const args = message.content.trim().split(/\s+/);
-        args.shift(); // إزالة كلمة "شيل"
+        args.shift(); 
 
         const targetId = args[0]?.replace(/[<@!>]/g, '');
         const targetUser = message.mentions.users.first() || await client.users.fetch(targetId).catch(() => null);
 
         if (!targetUser) {
-            return message.reply({ embeds: [errorEmbed('خطأ في الأمر', 'الرجاء منشن العضو أو كتابة الـ ID الخاص به بعد كلمة شيل.\nمثال: `شيل @user`')] });
+            return message.reply({ embeds: [errorEmbed('خطأ في الأمر', 'الرجاء منشن العضو أو كتابة الـ ID الخاص به لإزالة تحذيره.\nمثال: `شيل @user`')] });
         }
 
         const guildId = message.guild.id;
 
-        // محاولة مسح آخر تحذير (تمت صياغتها بناء على التوقع لقاعدتك الحالية)
-        // إذا كان اسم الميثود مختلف في WarningService، قم بتعديل الميثود أدناه فقط
-        const unwarnResult = await WarningService.removeLastWarning?.({ guildId, userId: targetUser.id }) 
-            || await WarningService.removeWarning?.({ guildId, userId: targetUser.id })
-            || { success: false };
+        const result = await WarningService.removeLastActiveWarning({ guildId, userId: targetUser.id });
 
-        // إرسال رسالة نجاح الإزالة في الشات
+        if (!result.success) {
+            return message.reply({ embeds: [errorEmbed('لم يتم الإجراء', 'العضو لا يملك أي تحذيرات نشطة ليتم حذفها.')] });
+        }
+
         await message.reply({
-            embeds: [successEmbed('تم إزالة التحذير', `تم إلغاء آخر تحذير عن العضو **${targetUser.tag}** بنجاح.`)]
+            embeds: [successEmbed('تم إزالة التحذير', `تم إلغاء آخر تحذير عن العضو **${targetUser.tag}** بنجاح.\nالتحذيرات النشطة المتبقية: **${result.remainingCount}**`)]
         });
 
-        // تسجيل العملية في اللوج الإداري المعتمد في البوت
         await logModerationAction({
             client,
             guild: message.guild,
@@ -160,63 +147,61 @@ async function handleUnwarnCommand(message, client) {
                 target: `${targetUser.tag} (${targetUser.id})`,
                 executor: `${message.author.tag} (${message.author.id})`,
                 reason: "إزالة تحذير سريع بواسطة أمر الإدارة",
-                metadata: { userId: targetUser.id, moderatorId: message.author.id }
+                metadata: { userId: targetUser.id, moderatorId: message.author.id, remainingWarns: result.remainingCount }
             }
         });
 
     } catch (error) {
-        logger.error('Error in Quick handleUnwarnCommand:', error);
-        return message.reply({ embeds: [errorEmbed('خطأ داخلي', 'حدث خطأ أثناء محاولة إلغاء التحذير.')] });
+        logger.error('Error in handleUnwarnCommand:', error);
     }
 }
 
 // ==========================================
-// [3] دالة أمر عرض سجل التحذيرات (ملف أو ملف @user)
+// [الأمر ملف]: استعراض سجل العضو الإداري المربوط بالدوال الحقيقية
 // ==========================================
 async function handleWarningsCommand(message, client) {
     try {
         const args = message.content.trim().split(/\s+/);
-        args.shift(); // إزالة كلمة "ملف"
+        args.shift(); 
 
         const targetId = args[0]?.replace(/[<@!>]/g, '') || message.author.id;
         const targetUser = message.mentions.users.first() || await client.users.fetch(targetId).catch(() => message.author);
         const guildId = message.guild.id;
 
-        // جلب التحذيرات الحالية من السرفيس (مبني على التوقع البرمجي لهيكل ميثودات الجلب لديك)
-        const warningsData = await WarningService.getWarnings?.({ guildId, userId: targetUser.id })
-            || await WarningService.getUserWarnings?.({ guildId, userId: targetUser.id })
-            || [];
-
-        // حساب عدد التحذيرات إذا كانت النتيجة مصفوفة أو كائن يحتوي على الكاونت
-        const totalWarns = Array.isArray(warningsData) ? warningsData.length : (warningsData.totalCount || 0);
+        // جلب التحذيرات الحقيقية باستخدام الميثود المعتمدة في بوتك
+        const warnings = await WarningService.getWarnings(guildId, targetUser.id);
+        const totalWarns = warnings.length;
 
         const infoEmbedFile = infoEmbed(
             `🗂️ الملف الإداري لـ ${targetUser.username}`,
-            `استعراض شامل لجميع العقوبات والتحذيرات المسجلة للعضو.`
+            `استعراض شامل لجميع العقوبات والتحذيرات المسجلة بملف العضو.`
         )
         .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
         .addFields(
             { name: '👤 الحساب', value: `${targetUser} (${targetUser.id})`, inline: false },
-            { name: '⚠️ عدد التحذيرات الحالية', value: `**${totalWarns}** تحذير`, inline: true }
+            { name: '⚠️ عدد التحذيرات النشطة', value: `**${totalWarns}** تحذير`, inline: true }
         )
         .setTimestamp();
 
-        // لو وجدنا مصفوفة وبها بيانات حقيقية، يمكننا عرض آخر الأسباب في الإمبيد
-        if (Array.isArray(warningsData) && warningsData.length > 0) {
-            const lastWarnsText = warningsData.slice(-5).map((w, index) => `${index + 1}. **السبب:** ${w.reason || 'غير محدد'} | **بواسطة:** <@${w.moderatorId}>`).join('\n');
-            infoEmbedFile.addFields({ name: '📝 آخر التحذيرات المسجلة', value: lastWarnsText, inline: false });
+        if (totalWarns > 0) {
+            const lastWarnsText = warnings.slice(-5).map((w, index) => {
+                const date = new Date(w.timestamp).toLocaleDateString('ar-EG');
+                return `${index + 1}. **السبب:** ${w.reason} | **المشرف:** <@${w.moderatorId}> | تاريخ: \`${date}\``;
+            }).join('\n');
+            infoEmbedFile.addFields({ name: '📝 آخر التحذيرات النشطة', value: lastWarnsText, inline: false });
+        } else {
+            infoEmbedFile.addFields({ name: '📝 سجل نظيف', value: 'هذا العضو لا يملك أي تحذيرات نشطة حالياً في السيرفر.', inline: false });
         }
 
         return message.reply({ embeds: [infoEmbedFile] });
 
     } catch (error) {
-        logger.error('Error in Quick handleWarningsCommand:', error);
-        return message.reply({ embeds: [errorEmbed('خطأ داخلي', 'حدث خطأ أثناء محاولة جلب ملف التحذيرات.')] });
+        logger.error('Error in handleWarningsCommand:', error);
     }
 }
 
 // ==========================================
-// [4] دالة نظام المستويات (نفس كود مشروعك الأصلي تماماً)
+// [نظام المستويات]: الكود الأصلي الخاص بك
 // ==========================================
 async function handleLeveling(message, client) {
     try {
