@@ -1,16 +1,13 @@
 import { Events, PermissionFlagsBits } from 'discord.js';
 import { logger } from '../utils/logger.js';
-import { getLevelingConfig, getUserLevelData } from '../services/leveling.js';
-import { addXp } from '../services/xpSystem.js';
+import { getLevelingConfig } from '../services/leveling.js';
 import { checkRateLimit } from '../utils/rateLimiter.js';
 
 // استيراد التنسيقات واللوج والسيرفيس المحدث
 import { errorEmbed, successEmbed, infoEmbed } from '../utils/embeds.js';
 import { logModerationAction } from '../utils/moderation.js';
 import { WarningService } from '../services/warningService.js';
-
-const MESSAGE_XP_RATE_LIMIT_ATTEMPTS = 12;
-const MESSAGE_XP_RATE_LIMIT_WINDOW_MS = 10000;
+import { XpService } from '../services/xpSystem.js'; // السيرفيس المطور الذي يحتوي على الفلتر والليدربورد
 
 export default {
     name: Events.MessageCreate,
@@ -18,34 +15,76 @@ export default {
         try {
             if (message.author.bot || !message.guild) return;
 
-            // 1. فحص أمر التحذير (ت)
+            // 1. فحص أمر لوحة الصدارة (t أو T) بشكل مستقل تماماً
+            const msgContent = message.content.trim();
+            if (msgContent === 't' || msgContent === 'T') {
+                return await handleLeaderboardCommand(message, client);
+            }
+
+            // 2. فحص أمر التحذير (ت)
             if (message.content.startsWith('ت ')) {
                 return await handleWarnCommand(message, client);
             }
 
-            // 2. فحص أمر إلغاء التحذير (شيل)
+            // 3. فحص أمر إلغاء التحذير (شيل)
             if (message.content.startsWith('شيل ')) {
                 return await handleUnwarnCommand(message, client);
             }
 
-            // 3. فحص أمر عرض ملف التحذيرات (ملف)
+            // 4. فحص أمر عرض ملف التحذيرات (ملف)
             if (message.content.trim().startsWith('ملف')) {
                 return await handleWarningsCommand(message, client);
             }
 
-            // 4. فحص أمر نقل التحذيرات (نقل)
+            // 5. فحص أمر نقل التحذيرات (نقل)
             if (message.content.startsWith('نقل ')) {
                 return await handleImportCommand(message, client);
             }
 
-            // 5. معالجة نظام المستويات ونقاط الخبرة للرسائل العادية
-            await handleLeveling(message, client);
+            // 6. معالجة نظام المستويات المطور (الرسائل المفيدة فقط)
+            await handleUsefulLeveling(message, client);
 
         } catch (error) {
             logger.error('Error in messageCreate event:', error);
         }
     }
 };
+
+// ==========================================
+// [الأمر t / T]: لوحة الصدارة (Leaderboard)
+// ==========================================
+async function handleLeaderboardCommand(message, client) {
+    try {
+        const guildId = message.guild.id;
+        
+        // جلب أعلى 5 في التكست والفويس من السيرفيس المطور
+        const { topText, topVoice } = await XpService.getLeaderboard(guildId, client);
+
+        const embed = infoEmbed(
+            `🏆 لوحة الصدارة لسيرفر ${message.guild.name}`,
+            `استعراض أعلى 5 أعضاء في التفاعل النصي والصوتي المعتمد على التفاعل الحقيقي.`
+        ).setTimestamp();
+
+        // بناء قائمة التكست (قراءة الـ totalXp الفعلي)
+        let textLeaderboard = topText.length > 0 
+            ? topText.map((user, index) => `**#${index + 1}** <@${user.userId}> ➜ \`${user.xp} XP\``).join('\n')
+            : 'لا توجد بيانات تفاعل نصي بعد.';
+
+        // بناء قائمة الفويس
+        let voiceLeaderboard = topVoice.length > 0 
+            ? topVoice.map((user, index) => `**#${index + 1}** <@${user.userId}> ➜ \`${user.xp} XP\``).join('\n')
+            : 'لا توجد بيانات تفاعل صوتي بعد.';
+
+        embed.addFields(
+            { name: '💬 أعلى 5 في التكست (10 رسائل مفيدة = 1XP)', value: textLeaderboard, inline: false },
+            { name: '🎙️ أعلى 5 في الفويس (نصف ساعة متواصلة = 1XP)', value: voiceLeaderboard, inline: false }
+        );
+
+        return message.reply({ embeds: [embed] });
+    } catch (error) {
+        logger.error('Error in handleLeaderboardCommand:', error);
+    }
+}
 
 // ==========================================
 // [الأمر ت]: إعطاء تحذير سريع
@@ -235,14 +274,16 @@ async function handleImportCommand(message, client) {
 }
 
 // ==========================================
-// [نظام المستويات]: الكود الأصلي الخاص بك
+// [نظام المستويات الجديد]: حساب وحفظ رسائل التفاعل المفيدة
 // ==========================================
-async function handleLeveling(message, client) {
+async function handleUsefulLeveling(message, client) {
     try {
-        const rateLimitKey = `xp-event:${message.guild.id}:${message.author.id}`;
-        const canProcess = await checkRateLimit(rateLimitKey, MESSAGE_XP_RATE_LIMIT_ATTEMPTS, MESSAGE_XP_RATE_LIMIT_WINDOW_MS);
+        // حماية سريعة لمنع السخام وضغط المعالجة العشوائي (رسالة كل ثانيتين لكل مستخدم كحد أقصى)
+        const rateLimitKey = `xp-useful:${message.guild.id}:${message.author.id}`;
+        const canProcess = await checkRateLimit(rateLimitKey, 1, 2000);
         if (!canProcess) return;
 
+        // التحقق من أن الميزة مفعلة بالسيرفر وقنواتها ليست مسحوب عليها عبر الـ config الأصلي لبوتك
         const levelingConfig = await getLevelingConfig(client, message.guild.id);
         if (!levelingConfig?.enabled) return;
         if (levelingConfig.ignoredChannels?.includes(message.channel.id)) return;
@@ -255,28 +296,10 @@ async function handleLeveling(message, client) {
         if (levelingConfig.blacklistedUsers?.includes(message.author.id)) return;
         if (!message.content || message.content.trim().length === 0) return;
 
-        const userData = await getUserLevelData(client, message.guild.id, message.author.id);
-        const cooldownTime = levelingConfig.xpCooldown || 60;
-        const now = Date.now();
-        const timeSinceLastMessage = now - (userData.lastMessage || 0);
-        if (timeSinceLastMessage < cooldownTime * 1000) return;
+        // إرسال البيانات إلى السيرفيس المطور لفحص الفائدة وزيادة عداد الـ 10 رسائل
+        await XpService.trackTextMessage(client, message.guild, message.member, message);
 
-        const minXP = levelingConfig.xpRange?.min || levelingConfig.xpPerMessage?.min || 15;
-        const maxXP = levelingConfig.xpRange?.max || levelingConfig.xpPerMessage?.max || 25;
-        const safeMinXP = Math.max(1, minXP);
-        const safeMaxXP = Math.max(safeMinXP, maxXP);
-
-        const xpToGive = Math.floor(Math.random() * (safeMaxXP - safeMinXP + 1)) + safeMinXP;
-        let finalXP = xpToGive;
-        if (levelingConfig.xpMultiplier && levelingConfig.xpMultiplier > 1) {
-            finalXP = Math.floor(finalXP * levelingConfig.xpMultiplier);
-        }
-
-        const result = await addXp(client, message.guild, message.member, finalXP);
-        if (result.success && result.leveledUp) {
-            logger.info(`${message.author.tag} leveled up to level ${result.level} in ${message.guild.name}`);
-        }
     } catch (error) {
-        logger.error('Error handling leveling for message:', error);
+        logger.error('Error handling useful leveling for message:', error);
     }
 }
