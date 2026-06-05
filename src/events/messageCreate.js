@@ -562,3 +562,64 @@ async function handleLeveling(message, client) {
 
 } 
 
+import { EmbedBuilder } from 'discord.js';
+import { db } from '../database.js';
+
+const cooldowns = new Set();
+
+export default async function messageCreateHandler(message) {
+    if (message.author.bot) return;
+
+    const content = message.content.trim().toLowerCase();
+
+    if (content === 't') {
+        try {
+            const textQuery = await db.query('SELECT user_id, text_xp FROM users_xp ORDER BY text_xp DESC LIMIT 5');
+            const voiceQuery = await db.query('SELECT user_id, voice_xp FROM users_xp ORDER BY voice_xp DESC LIMIT 5');
+
+            let textLeaderboard = textQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - ${Math.floor(row.text_xp)} XP`).join('\n') || 'لا يوجد بيانات كافية';
+            let voiceLeaderboard = voiceQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - ${Math.floor(row.voice_xp)} XP`).join('\n') || 'لا يوجد بيانات كافية';
+
+            const embed = new EmbedBuilder()
+                .setTitle('قائمة أفضل 5 أعضاء المتفاعلين')
+                .setColor('#2b2d31')
+                .addFields(
+                    { name: 'الرسائل الكتابية', value: textLeaderboard, inline: true },
+                    { name: 'التفاعل الصوتي', value: voiceLeaderboard, inline: true }
+                )
+                .setTimestamp();
+
+            return message.reply({ embeds: [embed] });
+        } catch (error) {
+            console.error("Database Error Leaderboard:", error);
+            return message.reply("حدث خطأ أثناء جلب البيانات.");
+        }
+    }
+
+    const wordsCount = message.content.split(/\s+/).length;
+    if (wordsCount < 3) return;
+
+    if (cooldowns.has(message.author.id)) return;
+
+    cooldowns.add(message.author.id);
+    setTimeout(() => {
+        cooldowns.delete(message.author.id);
+    }, 180000); 
+
+    try {
+        await db.query(`
+            INSERT INTO users_xp (user_id, valid_message_count, text_xp) 
+            VALUES ($1, 1, 0) 
+            ON CONFLICT (user_id) 
+            DO UPDATE SET 
+                valid_message_count = users_xp.valid_message_count + 1,
+                text_xp = CASE 
+                    WHEN (users_xp.valid_message_count + 1) % 10 = 0 THEN users_xp.text_xp + 1 
+                    ELSE users_xp.text_xp 
+                END;
+        `, [message.author.id]);
+    } catch (error) {
+        console.error("Database Error Text XP:", error);
+    }
+}
+
