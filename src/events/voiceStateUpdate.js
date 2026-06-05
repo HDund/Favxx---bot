@@ -309,5 +309,58 @@ function trimCooldownMapIfNeeded() {
     }
 }
 
+import { db } from '../database.js';
+
+const voiceSessions = new Map();
+
+export default async function voiceStateUpdateHandler(oldState, newState) {
+    if (newState.member.user.bot) return;
+
+    const userId = newState.member.id;
+    const now = Date.now();
+
+    const joinedVoice = !oldState.channelId && newState.channelId;
+    const leftVoice = oldState.channelId && !newState.channelId;
+    const switchedState = oldState.channelId && newState.channelId && (oldState.selfMute !== newState.selfMute || oldState.serverMute !== newState.serverMute);
+
+    if (joinedVoice) {
+        voiceSessions.set(userId, {
+            joinTime: now,
+            isMuted: newState.selfMute || newState.serverMute
+        });
+    }
+
+    if (leftVoice || switchedState) {
+        const session = voiceSessions.get(userId);
+        if (session) {
+            const timeSpentMs = now - session.joinTime;
+            const hoursSpent = timeSpentMs / (1000 * 60 * 60);
+            
+            const xpRate = session.isMuted ? 32 : 64;
+            const earnedXp = hoursSpent * xpRate;
+
+            try {
+                await db.query(`
+                    INSERT INTO users_xp (user_id, voice_xp) 
+                    VALUES ($1, $2) 
+                    ON CONFLICT (user_id) 
+                    DO UPDATE SET voice_xp = users_xp.voice_xp + EXCLUDED.voice_xp;
+                `, [userId, earnedXp]);
+            } catch (error) {
+                console.error("Database Error Voice XP:", error);
+            }
+
+            if (leftVoice) {
+                voiceSessions.delete(userId);
+            } else {
+                voiceSessions.set(userId, {
+                    joinTime: now,
+                    isMuted: newState.selfMute || newState.serverMute
+                });
+            }
+        }
+    }
+}
+
 
 
