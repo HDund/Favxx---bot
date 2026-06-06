@@ -4,10 +4,27 @@ import { logger } from './logger.js';
 import { BotConfig } from '../config/bot.js';
 import { normalizeGuildConfig, validateGuildConfigOrThrow } from './schemas.js';
 import { DEFAULT_GUILD_CONFIG } from './constants.js';
-import pg from 'pg'; // استدعاء مكتبة قاعدة البيانات مباشرة
+import { URL } from 'url';
 
-// تفعيل قراءة المتغيرات بشكل مباشر وإجباري لـ Render
-const connectionString = process.env.DATABASE_URL;
+// =====================================================================
+// [إصلاح جذري]: تفكيك رابط DATABASE_URL تلقائياً ليتوافق مع مكتبة pg
+// هذا يحل مشكلة استضافة Render التي لا توفر المتغيرات المنفصلة
+// =====================================================================
+if (process.env.DATABASE_URL) {
+    try {
+        const dbUrl = new URL(process.env.DATABASE_URL);
+        process.env.PGUSER = dbUrl.username;
+        process.env.PGPASSWORD = decodeURIComponent(dbUrl.password);
+        process.env.PGHOST = dbUrl.hostname;
+        process.env.PGPORT = dbUrl.port || '5432';
+        process.env.PGDATABASE = dbUrl.pathname.replace('/', '');
+        // Supabase يتطلب اتصالاً مشفراً (SSL)
+        process.env.PGSSLMODE = dbUrl.hostname.includes('supabase') ? 'require' : 'prefer';
+    } catch (e) {
+        logger.warn('Failed to parse DATABASE_URL automatically:', e.message);
+    }
+}
+// =====================================================================
 
 class DatabaseWrapper {
     constructor() {
@@ -17,7 +34,6 @@ class DatabaseWrapper {
         this.connectionType = 'none';
         this.degradedModeWarningShown = false;
         this.degradedReason = null;
-        this.pool = null;
     }
 
     async initialize() {
@@ -26,42 +42,41 @@ class DatabaseWrapper {
         }
 
         try {
-            logger.info('Attempting to connect to PostgreSQL via DATABASE_URL...');
+            logger.info('Attempting to connect to PostgreSQL...');
             
-            // إنشاء اتصال مباشر وقوي يتخطى أي ملفات فرعية معطلة
-            if (connectionString) {
-                this.pool = new pg.Pool({
-                    connectionString: connectionString,
-                    ssl: connectionString.includes('supabase') ? { rejectUnauthorized: false } : false
-                });
-                
-                // اختبار الاتصال بطلب بسيط
-                await this.pool.query('SELECT NOW()');
-                
+            // نترك البوت يتصل بطريقته الأصلية لضمان عمل الـ Migrations وبناء الجداول
+            const pgConnected = await pgDb.connect();
+            if (pgConnected) {
                 this.db = pgDb;
-                // إجبار الكود الفرعي على استخدام الـ pool الناجح الخاص بنا
-                if (!this.db.pool) this.db.pool = this.pool;
-                
                 this.connectionType = 'postgresql';
                 this.degradedReason = null;
-                this.useFallback = false;
-                logger.info('✅ PostgreSQL Database initialized - Connection Successful to Supabase!');
+                logger.info('✅ PostgreSQL Database initialized - using persistent database');
                 this.initialized = true;
                 return;
-            } else {
-                throw new Error('DATABASE_URL variable is completely missing from Environment!');
             }
 
+            const pgFailure = pgDb.getLastFailure?.();
+            if (pgFailure?.reason === 'SCHEMA_VERSION_MISMATCH') {
+                const schemaError = new Error(
+                    `Schema version mismatch detected (${pgFailure.message}). Run migrations before startup.`
+                );
+                schemaError.code = 'SCHEMA_VERSION_MISMATCH';
+                throw schemaError;
+            }
         } catch (error) {
-            logger.warn('PostgreSQL connection failed via direct pool:', error.message);
+            logger.warn('PostgreSQL connection failed:', error.message);
+
+            if (error.code === 'SCHEMA_VERSION_MISMATCH') {
+                throw error;
+            }
         }
 
-        // الخيار الاحتياطي في حال الفشل التام
         this.db = new MemoryStorage();
         this.useFallback = true;
         this.connectionType = 'memory';
         this.degradedReason = 'POSTGRES_UNAVAILABLE';
         logger.warn('⚠️  DATABASE DEGRADED MODE ENABLED - Using in-memory storage (data will be lost on restart)');
+        logger.warn('⚠️  Please check PostgreSQL connection and restart the bot when fixed');
         this.initialized = true;
         this.degradedModeWarningShown = true;
     }
@@ -164,6 +179,11 @@ export async function initializeDatabase() {
         return { db };
     } catch (error) {
         logger.error("❌ Database Initialization Error:", error);
+
+        if (error.code === 'SCHEMA_VERSION_MISMATCH') {
+            throw error;
+        }
+
         return { db };
     }
 }
@@ -434,21 +454,23 @@ export async function deleteGiveaway(client, guildId, messageId) {
 
 export async function getEndedGiveaways(client) {
     try {
-        if (!client.db || db.useFallback) {
+        if (!client.db || !client.db.isAvailable()) {
             logger.warn('Database not available for getEndedGiveaways, using fallback');
             return [];
         }
 
+        const { pgDb } = await import('./postgresDatabase.js');
         const { pgConfig } = await import('../config/postgres.js');
-        const targetPool = db.pool || pgDb.pool;
         
-        if (!targetPool) return [];
+        if (!pgDb.isAvailable()) {
+            return [];
+        }
 
-        const result = await targetPool.query(
+        const result = await pgDb.pool.query(
             `SELECT id, guild_id, message_id, data, ends_at 
              FROM ${pgConfig.tables.giveaways} 
              WHERE ends_at <= NOW() 
-             AND (data->>\'ended\')::boolean = false
+             AND (data->>'ended')::boolean = false
              ORDER BY ends_at ASC`
         );
 
@@ -461,17 +483,19 @@ export async function getEndedGiveaways(client) {
 
 export async function markGiveawayEnded(client, giveawayId, endedData) {
     try {
-        if (!client.db || db.useFallback) {
+        if (!client.db || !client.db.isAvailable()) {
             logger.warn('Database not available for markGiveawayEnded');
             return false;
         }
 
+        const { pgDb } = await import('./postgresDatabase.js');
         const { pgConfig } = await import('../config/postgres.js');
-        const targetPool = db.pool || pgDb.pool;
         
-        if (!targetPool) return false;
+        if (!pgDb.isAvailable()) {
+            return false;
+        }
 
-        await targetPool.query(
+        await pgDb.pool.query(
             `UPDATE ${pgConfig.tables.giveaways} 
              SET data = $1, updated_at = NOW() 
              WHERE id = $2`,
@@ -526,14 +550,13 @@ export async function getOpenTicketCountForUser(guildId, userId) {
             await db.initialize();
         }
 
-        const targetPool = db.pool || db.db?.pool;
-        if (targetPool && !db.useFallback) {
+        if (db.db?.pool && typeof db.db.isAvailable === 'function' && db.db.isAvailable()) {
             const { pgConfig } = await import('../config/postgres.js');
-            const result = await targetPool.query(
+            const result = await db.db.pool.query(
                 `SELECT COUNT(*)::int AS count FROM ${pgConfig.tables.tickets}
                  WHERE guild_id = $1
-                   AND data->>\'userId\' = $2
-                   AND data->>\'status\' = \'open\'`,
+                   AND data->>'userId' = $2
+                   AND data->>'status' = 'open'`,
                 [guildId, userId]
             );
 
@@ -603,6 +626,7 @@ export async function incrementTicketCounter(guildId) {
     const nextCounter = currentCounter + 1;
     
     await db.set(key, nextCounter);
+    
     return nextCounter.toString().padStart(3, '0');
 }
 
@@ -776,7 +800,7 @@ export async function getUserLevelData(client, guildId, userId) {
             };
         }
         
-        return {
+        const levelData = {
             xp: data.xp || 0,
             level: data.level || 0,
             totalXp: data.totalXp || 0,
@@ -784,6 +808,8 @@ export async function getUserLevelData(client, guildId, userId) {
             rank: data.rank || 0,
             xpToNextLevel: getXpForLevel((data.level || 0) + 1)
         };
+        
+        return levelData;
     } catch (error) {
         logger.error(`Error getting level data for user ${userId} in guild ${guildId}:`, error);
         return {
@@ -865,6 +891,7 @@ export async function getLeaderboard(client, guildId, limit = 10) {
         });
         
         let userData = (await Promise.all(userDataPromises)).filter(Boolean);
+        
         userData.sort((a, b) => (b.totalXp || 0) - (a.totalXp || 0));
         
         userData = userData.map((user, index) => ({
@@ -957,7 +984,12 @@ export async function getApplicationSettings(client, guildId) {
                 "What experience do you have that would make you a good fit?",
                 "How much time can you dedicate to this role?"
             ],
-            roles: { admin: null, reviewer: null, accepted: null, denied: null },
+            roles: {
+                admin: null,
+                reviewer: null,
+                accepted: null,
+                denied: null
+            },
             requiredRoles: [],
             deniedRoles: [],
             minAccountAge: 0,
@@ -981,7 +1013,23 @@ export async function getApplicationSettings(client, guildId) {
                 "Why do you want to join our staff team?",
                 "What experience do you have that would make you a good fit?",
                 "How much time can you dedicate to this role?"
-            ]
+            ],
+            roles: {
+                admin: null,
+                reviewer: null,
+                accepted: null,
+                denied: null
+            },
+            requiredRoles: [],
+            deniedRoles: [],
+            minAccountAge: 0,
+            maxApplications: 1,
+            cooldown: 7,
+            allowMultipleApplications: false,
+            requireVerification: false,
+            customWelcomeMessage: "",
+            pendingApplicationRetentionDays: 30,
+            reviewedApplicationRetentionDays: 14
         };
     }
 }
