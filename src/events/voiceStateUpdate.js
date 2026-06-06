@@ -8,8 +8,11 @@ import {
 } from '../utils/database.js';
 import { sanitizeInput } from '../utils/sanitization.js';
 import { logger } from '../utils/logger.js';
+import { db } from '../database.js';
 
 const channelCreationCooldown = new Map();
+const voiceSessions = new Map();
+
 const VOICE_CREATE_COOLDOWN_MS = 2000;
 const DEFAULT_VOICE_BITRATE = 64000;
 const MAX_VOICE_BITRATE = 384000;
@@ -21,17 +24,75 @@ const MAX_TRACKED_COOLDOWNS = 10000;
 export default {
     name: 'voiceStateUpdate',
     async execute(oldState, newState, client) {
-        if (newState.member.user.bot) return;
+        if ((newState.member && newState.member.user.bot) || (oldState.member && oldState.member.user.bot)) return;
 
-        const guildId = newState.guild.id;
-        const userId = newState.member.id;
+        const guildId = newState.guild?.id || oldState.guild?.id;
+        const userId = newState.member?.id || oldState.member?.id;
+        if (!guildId || !userId) return;
+
         const cooldownKey = `${guildId}-${userId}`;
         cleanupCooldownEntries();
 
+        // ==========================================
+        // [1] نظام حساب نقاط الخبرة الصوتية (Voice XP)
+        // ==========================================
+        try {
+            const now = Date.now();
+            const joinedVoice = !oldState.channelId && newState.channelId;
+            const leftVoice = oldState.channelId && !newState.channelId;
+            const switchedState = oldState.channelId && newState.channelId && 
+                (oldState.selfMute !== newState.selfMute || oldState.serverMute !== newState.serverMute);
+
+            if (joinedVoice) {
+                voiceSessions.set(userId, {
+                    joinTime: now,
+                    isMuted: newState.selfMute || newState.serverMute
+                });
+            }
+
+            if (leftVoice || switchedState) {
+                const session = voiceSessions.get(userId);
+                if (session) {
+                    const timeSpentMs = now - session.joinTime;
+                    const hoursSpent = timeSpentMs / (1000 * 60 * 60);
+                    
+                    const xpRate = session.isMuted ? 32 : 64;
+                    const earnedXp = hoursSpent * xpRate;
+
+                    if (earnedXp > 0) {
+                        try {
+                            await db.query(`
+                                INSERT INTO users_xp (user_id, voice_xp) 
+                                VALUES ($1, $2) 
+                                ON CONFLICT (user_id) 
+                                DO UPDATE SET voice_xp = users_xp.voice_xp + EXCLUDED.voice_xp;
+                            `, [userId, earnedXp]);
+                        } catch (error) {
+                            logger.error("Database Error Voice XP:", error);
+                        }
+                    }
+
+                    if (leftVoice) {
+                        voiceSessions.delete(userId);
+                    } else {
+                        voiceSessions.set(userId, {
+                            joinTime: now,
+                            isMuted: newState.selfMute || newState.serverMute
+                        });
+                    }
+                }
+            }
+        } catch (xpError) {
+            logger.error("Error in Voice XP tracking system:", xpError);
+        }
+
+        // ==========================================
+        // [2] نظام إنشاء الرومات المؤقتة (Join to Create)
+        // ==========================================
         try {
             const config = await getJoinToCreateConfig(client, guildId);
 
-            if (!config.enabled || config.triggerChannels.length === 0) {
+            if (!config || !config.enabled || !config.triggerChannels || config.triggerChannels.length === 0) {
                 return;
             }
 
@@ -48,9 +109,10 @@ export default {
             }
 
         } catch (error) {
-            logger.error(`Error in voiceStateUpdate for guild ${guildId}:`, error);
+            logger.error(`Error in voiceStateUpdate JoinToCreate for guild ${guildId}:`, error);
         }
 
+        // الدوال الفرعية التابعة لنظام الرومات المؤقتة والمحمية داخل النطاق الحالي
         async function handleVoiceJoin(client, state, config) {
             const { channel, member } = state;
 
@@ -61,7 +123,7 @@ export default {
             const now = Date.now();
             if (channelCreationCooldown.has(cooldownKey)) {
                 const lastCreation = channelCreationCooldown.get(cooldownKey);
-if (now - lastCreation < VOICE_CREATE_COOLDOWN_MS) {
+                if (now - lastCreation < VOICE_CREATE_COOLDOWN_MS) {
                     logger.warn(`User ${member.id} is on cooldown for channel creation`);
                     return;
                 }
@@ -181,9 +243,9 @@ if (now - lastCreation < VOICE_CREATE_COOLDOWN_MS) {
 
                 const tempChannel = await guild.channels.create({
                     name: channelName,
-type: ChannelType.GuildVoice,
+                    type: ChannelType.GuildVoice,
                     parent: triggerChannel.parentId,
-userLimit: userLimit === 0 ? undefined : userLimit,
+                    userLimit: userLimit === 0 ? undefined : userLimit,
                     bitrate: bitrate,
                     permissionOverwrites: [
                         {
@@ -308,59 +370,4 @@ function trimCooldownMapIfNeeded() {
         channelCreationCooldown.delete(entries[index][0]);
     }
 }
-
-import { db } from '../database.js';
-
-const voiceSessions = new Map();
-
-export default async function voiceStateUpdateHandler(oldState, newState) {
-    if (newState.member.user.bot) return;
-
-    const userId = newState.member.id;
-    const now = Date.now();
-
-    const joinedVoice = !oldState.channelId && newState.channelId;
-    const leftVoice = oldState.channelId && !newState.channelId;
-    const switchedState = oldState.channelId && newState.channelId && (oldState.selfMute !== newState.selfMute || oldState.serverMute !== newState.serverMute);
-
-    if (joinedVoice) {
-        voiceSessions.set(userId, {
-            joinTime: now,
-            isMuted: newState.selfMute || newState.serverMute
-        });
-    }
-
-    if (leftVoice || switchedState) {
-        const session = voiceSessions.get(userId);
-        if (session) {
-            const timeSpentMs = now - session.joinTime;
-            const hoursSpent = timeSpentMs / (1000 * 60 * 60);
-            
-            const xpRate = session.isMuted ? 32 : 64;
-            const earnedXp = hoursSpent * xpRate;
-
-            try {
-                await db.query(`
-                    INSERT INTO users_xp (user_id, voice_xp) 
-                    VALUES ($1, $2) 
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET voice_xp = users_xp.voice_xp + EXCLUDED.voice_xp;
-                `, [userId, earnedXp]);
-            } catch (error) {
-                console.error("Database Error Voice XP:", error);
-            }
-
-            if (leftVoice) {
-                voiceSessions.delete(userId);
-            } else {
-                voiceSessions.set(userId, {
-                    joinTime: now,
-                    isMuted: newState.selfMute || newState.serverMute
-                });
-            }
-        }
-    }
-}
-
-
 
