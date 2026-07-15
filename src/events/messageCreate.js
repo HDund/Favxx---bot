@@ -5,76 +5,97 @@ import { WarningService } from '../services/warningService.js';
 import { errorEmbed, successEmbed, infoEmbed } from '../utils/embeds.js';
 import { logModerationAction } from '../utils/moderation.js';
 
-const cooldowns = new Set();
+// استخدام Set بدلاً من Map لتفادي استهلاك الذاكرة (Memory Leak)
+const spamCooldown = new Set();
 
 export default {
     name: Events.MessageCreate,
     async execute(message, client) {
         try {
+            // 1. تجاهل البوتات والرسائل الخاصة
             if (message.author.bot || !message.guild) return;
 
-            // 1. معالجة أوامر التحذير الإدارية بـ الـ Prefix العربي
-            if (message.content.startsWith('ت ')) {
+            const content = message.content.trim();
+            const guildId = message.guild.id;
+            const userId = message.author.id;
+
+            // ==========================================
+            // 2. الأوامر الإدارية (ت، شيل، ملف)
+            // ==========================================
+            if (content.startsWith('ت ')) {
                 return await handleWarnCommand(message, client);
             }
 
-            if (message.content.startsWith('شيل ')) {
+            if (content.startsWith('شيل ')) {
                 return await handleUnwarnCommand(message, client);
             }
 
-            if (message.content.trim().startsWith('ملف')) {
+            // التطابق التام أو وجود مسافة لمنع تداخل الكلمات مثل "ملفات"
+            if (content === 'ملف' || content.startsWith('ملف ')) {
                 return await handleWarningsCommand(message, client);
             }
 
-            // 2. معالجة أمر الإحصائيات واللوحة الصدارة (t) لركوب التفاعل
-            const content = message.content.trim().toLowerCase();
-            if (content === 't') {
+            // ==========================================
+            // 3. أمر لوحة المتصدرين (t أو T)
+            // ==========================================
+            if (content.toLowerCase() === 't') {
                 try {
-                    const textQuery = await db.query('SELECT user_id, text_xp FROM users_xp ORDER BY text_xp DESC LIMIT 5');
-                    const voiceQuery = await db.query('SELECT user_id, voice_xp FROM users_xp ORDER BY voice_xp DESC LIMIT 5');
+                    const textQuery = await db.query('SELECT user_id, text_xp FROM users_xp WHERE guild_id = $1 ORDER BY text_xp DESC LIMIT 5', [guildId]);
+                    const voiceQuery = await db.query('SELECT user_id, voice_xp FROM users_xp WHERE guild_id = $1 ORDER BY voice_xp DESC LIMIT 5', [guildId]);
 
-                    let textLeaderboard = textQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - ${Math.floor(row.text_xp)} XP`).join('\n') || 'لا يوجد بيانات كافية';
-                    let voiceLeaderboard = voiceQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - ${Math.floor(row.voice_xp)} XP`).join('\n') || 'لا يوجد بيانات كافية';
+                    const textLeaderboard = textQuery.rows.length === 0 
+                        ? 'لا يوجد بيانات كافية' 
+                        : textQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - ${Math.floor(row.text_xp)} XP`).join('\n');
+                    
+                    const voiceLeaderboard = voiceQuery.rows.length === 0 
+                        ? 'لا يوجد بيانات كافية' 
+                        : voiceQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - ${Math.floor(row.voice_xp)} XP`).join('\n');
 
                     const embed = new EmbedBuilder()
-                        .setTitle('قائمة أفضل 5 أعضاء المتفاعلين')
+                        .setTitle('🏆 قائمة أفضل 5 أعضاء متفاعلين')
                         .setColor('#2b2d31')
                         .addFields(
-                            { name: 'الرسائل الكتابية', value: textLeaderboard, inline: true },
-                            { name: 'التفاعل الصوتي', value: voiceLeaderboard, inline: true }
+                            { name: '✍️ الرسائل الكتابية', value: textLeaderboard, inline: true },
+                            { name: '🎙️ التفاعل الصوتي', value: voiceLeaderboard, inline: true }
                         )
                         .setTimestamp();
 
                     return message.reply({ embeds: [embed] });
                 } catch (error) {
                     logger.error("Database Error Leaderboard (T Command):", error);
-                    return message.reply("حدث خطأ أثناء جلب البيانات من قاعدة البيانات.");
+                    return message.reply("❌ حدث خطأ أثناء جلب البيانات من قاعدة البيانات.");
                 }
             }
 
-            // 3. نظام الـ XP والخبرة الجديد للرسائل العادية بحسب شروطك الدقيقة
-            const wordsCount = message.content.split(/\s+/).length;
-            if (wordsCount < 3) return; // شرط الحد الأدنى من الكلمات (3 كلمات)
+            // ==========================================
+            // 4. نظام نقاط الكتابة (Text XP)
+            // ==========================================
+            
+            // الفلتر الأول: الحد الأدنى 3 كلمات
+            const wordsCount = content.split(/\s+/).length;
+            if (wordsCount < 3) return;
 
-            if (cooldowns.has(message.author.id)) return; // شرط وقت الانتظار (Cooldown)
-
-            cooldowns.add(message.author.id);
+            // الفلتر الثاني: منع السبام (3 ثواني)
+            if (spamCooldown.has(userId)) return; // العضو في فترة الانتظار، نتجاهل رسالته
+            
+            spamCooldown.add(userId);
             setTimeout(() => {
-                cooldowns.delete(message.author.id);
-            }, 180000); // إزالة الكول داون بعد 3 دقائق كاملة
+                spamCooldown.delete(userId); // إزالة الكول داون لتفريغ الذاكرة
+            }, 3000);
 
+            // الفلتر الثالث: تحديث قاعدة البيانات (استعلام ذكي بخطوة واحدة)
             try {
                 await db.query(`
-                    INSERT INTO users_xp (user_id, valid_message_count, text_xp) 
-                    VALUES ($1, 1, 0) 
-                    ON CONFLICT (user_id) 
+                    INSERT INTO users_xp (guild_id, user_id, valid_message_count, text_xp) 
+                    VALUES ($1, $2, 1, 0) 
+                    ON CONFLICT (guild_id, user_id) 
                     DO UPDATE SET 
                         valid_message_count = users_xp.valid_message_count + 1,
                         text_xp = CASE 
                             WHEN (users_xp.valid_message_count + 1) % 10 = 0 THEN users_xp.text_xp + 1 
                             ELSE users_xp.text_xp 
                         END;
-                `, [message.author.id]);
+                `, [guildId, userId]);
             } catch (error) {
                 logger.error("Database Error Text XP System:", error);
             }
@@ -86,7 +107,7 @@ export default {
 };
 
 // =========================================================================
-// الدوال التنفيذية الخاصة بالأوامر الإدارية (تم الحفاظ عليها بدقة لمنع التعارض)
+// الدوال التنفيذية الخاصة بالأوامر الإدارية (معزولة بدقة لمنع التعارض)
 // =========================================================================
 
 async function handleWarnCommand(message, client) {
