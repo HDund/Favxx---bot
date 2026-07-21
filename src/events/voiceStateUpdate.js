@@ -32,40 +32,59 @@ export default {
         if (!guildId || !userId) return;
 
         // ==========================================
-        // [1] نظام حساب نقاط الخبرة الصوتية (Voice XP)
+        // [1] نظام حساب نقاط الخبرة الصوتية (Voice XP) 
         // ==========================================
         try {
             const now = Date.now();
+            
+            // نتحقق من حالة الـ Deafen (السماعة) فقط، الميوت العادي يُعامل كطبيعي
+            const isDeaf = newState.selfDeaf || newState.serverDeaf;
+            const wasDeaf = oldState.selfDeaf || oldState.serverDeaf;
+
             const joinedVoice = !oldState.channelId && newState.channelId;
             const leftVoice = oldState.channelId && !newState.channelId;
             
-            // عند الدخول للروم
+            // تحقق ما إذا قام العضو بتشغيل أو إيقاف السماعة (Deafen) وهو لا يزال داخل الروم
+            const deafStateChanged = oldState.channelId && newState.channelId && (isDeaf !== wasDeaf);
+
+            // الحالة الأولى: دخل الروم
             if (joinedVoice) {
-                voiceSessions.set(userId, {
-                    joinTime: now,
-                    isMuted: newState.selfMute || newState.serverMute
-                });
+                voiceSessions.set(userId, { startTime: now, isDeaf: isDeaf });
             }
 
-            // عند الخروج من الروم أو تبديل الحالة
-            if (leftVoice) {
+            // الحالة الثانية: طلع من الروم، أو غيّر حالة السماعة (Deafen)
+            if (leftVoice || deafStateChanged) {
                 const session = voiceSessions.get(userId);
+                
                 if (session) {
-                    const timeSpentMs = now - session.joinTime;
-                    const minutesSpent = timeSpentMs / (1000 * 60); // الحساب بالدقائق
+                    const timeSpentMs = now - session.startTime;
+                    const minutesSpent = timeSpentMs / 60000; // تحويل الملي ثانية إلى دقائق
                     
-                    // منح نقطة واحدة لكل دقيقة (أو عدل المعدل حسب رغبتك)
-                    const earnedXp = Math.floor(minutesSpent * 1); 
+                    // تحديد سرعة النقاط: 32 للـ Deafen و 64 للطبيعي/الميوت
+                    const ratePerMinute = session.isDeaf ? 32 : 64;
+                    
+                    // حساب النقاط المكتسبة
+                    const earnedXp = Math.floor(minutesSpent * ratePerMinute);
 
                     if (earnedXp > 0) {
                         await db.query(`
-                            INSERT INTO users_xp (guild_id, user_id, voice_xp) 
-                            VALUES ($1, $2, $3) 
+                            INSERT INTO users_xp (guild_id, user_id, voice_xp, text_xp, valid_message_count) 
+                            VALUES ($1, $2, $3, 0, 0) 
                             ON CONFLICT (guild_id, user_id) 
                             DO UPDATE SET voice_xp = users_xp.voice_xp + EXCLUDED.voice_xp;
                         `, [guildId, userId, earnedXp]);
                     }
-                    voiceSessions.delete(userId);
+                    
+                    // إذا كان العضو لا يزال بالروم وغير حالته فقط، نبدأ له جلسة جديدة بالحالة الجديدة
+                    if (deafStateChanged) {
+                        voiceSessions.set(userId, { startTime: now, isDeaf: isDeaf });
+                    } else {
+                        // إذا خرج من الروم نمسح الجلسة تماماً
+                        voiceSessions.delete(userId);
+                    }
+                } else if (deafStateChanged) {
+                     // احتياطياً في حال لم يتم العثور على جلسة سابقة
+                     voiceSessions.set(userId, { startTime: now, isDeaf: isDeaf });
                 }
             }
         } catch (xpError) {
@@ -90,20 +109,10 @@ export default {
         } catch (error) {
             logger.error(`Error in voiceStateUpdate JoinToCreate for guild ${guildId}:`, error);
         }
-
-        // --- الدوال الخاصة بالرومات المؤقتة (تم إبقاؤها كما هي) ---
-        async function handleVoiceJoin(client, state, config) { /* ... نفس دالتك السابقة ... */ }
-        async function handleVoiceLeave(client, state, config) { /* ... نفس دالتك السابقة ... */ }
-        async function handleVoiceMove(client, oldState, newState, config) { /* ... نفس دالتك السابقة ... */ }
-        async function createTemporaryChannel(client, state, config) { /* ... نفس دالتك السابقة ... */ }
-        async function deleteTemporaryChannel(client, channel, guildId) { /* ... نفس دالتك السابقة ... */ }
-        async function transferChannelOwnership(client, channel, guildId, newOwnerId) { /* ... نفس دالتك السابقة ... */ }
     }
 };
 
-// الدوال المساعدة للرومات
-function sanitizeVoiceChannelName(inputName) { /* ... */ }
-function clampVoiceBitrate(value) { /* ... */ }
-function cleanupCooldownEntries() { /* ... */ }
-function trimCooldownMapIfNeeded() { /* ... */ }
+// ==========================================
+// --- الدوال الخاصة بالرومات المؤقتة (اتركها كما هي في ملفك ولا تحذفها) ---
+// ==========================================
 
