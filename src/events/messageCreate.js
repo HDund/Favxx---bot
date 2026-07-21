@@ -39,6 +39,13 @@ export default {
             // 3. أمر لوحة المتصدرين (t أو T)
             // ==========================================
             if (content.toLowerCase() === 't') {
+                // التحقق من الروم المخصص (لن يعمل الأمر إلا في هذا الروم)
+                const LEADERBOARD_CHANNEL_ID = '1482802878560207110';
+                
+                if (message.channel.id !== LEADERBOARD_CHANNEL_ID) {
+                    return; // تجاهل الأمر بصمت إذا كان في روم مختلف
+                }
+
                 try {
                     const textQuery = await db.query('SELECT user_id, text_xp FROM users_xp WHERE guild_id = $1 ORDER BY text_xp DESC LIMIT 5', [guildId]);
                     const voiceQuery = await db.query('SELECT user_id, voice_xp FROM users_xp WHERE guild_id = $1 ORDER BY voice_xp DESC LIMIT 5', [guildId]);
