@@ -36,9 +36,9 @@ export default {
             }
 
             // ==========================================
-            // 3. أمر لوحة المتصدرين (t أو T)
+            // 3. أمر لوحة المتصدرين المطور (t أو T)
             // ==========================================
-            if (content.toLowerCase() === 't') {
+            if (content.toLowerCase() === 't' || content.toLowerCase().startsWith('t ')) {
                 // التحقق من الروم المخصص (لن يعمل الأمر إلا في هذا الروم)
                 const LEADERBOARD_CHANNEL_ID = '1482802878560207110';
                 
@@ -47,30 +47,75 @@ export default {
                 }
 
                 try {
-                    const textQuery = await db.query('SELECT user_id, text_xp FROM users_xp WHERE guild_id = $1 ORDER BY text_xp DESC LIMIT 5', [guildId]);
-                    const voiceQuery = await db.query('SELECT user_id, voice_xp FROM users_xp WHERE guild_id = $1 ORDER BY voice_xp DESC LIMIT 5', [guildId]);
+                    // تحليل المدخلات (Arguments) بعد حرف الـ t
+                    const args = content.split(/\s+/);
+                    args.shift(); // إزالة حرف الـ t
 
-                    const textLeaderboard = textQuery.rows.length === 0 
-                        ? 'لا يوجد بيانات كافية' 
-                        : textQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - ${Math.floor(row.text_xp)} XP`).join('\n');
+                    let targetCategory = null; // 'text' أو 'voice'
+                    let page = 1;
+
+                    // تحليل البارامترات بذكاء لاستخراج الفئة ورقم الصفحة
+                    for (const arg of args) {
+                        const lowerArg = arg.toLowerCase();
+                        if (lowerArg === 'text' || lowerArg === 'voice') {
+                            targetCategory = lowerArg;
+                        } else if (!isNaN(arg)) {
+                            page = parseInt(arg);
+                            if (page < 1) page = 1;
+                        }
+                    }
+
+                    const embed = new EmbedBuilder().setColor('#2b2d31').setTimestamp();
+
+                    // الحالة الأولى: عرض فئة محددة مع نظام صفحات (10 أشخاص لكل صفحة) مثل t voice 2 أو t text
+                    if (targetCategory) {
+                        const limit = 10;
+                        const offset = (page - 1) * limit;
+                        const columnName = targetCategory === 'text' ? 'text_xp' : 'voice_xp';
+                        const titleName = targetCategory === 'text' ? '✍️ قائمة متصدري الرسائل الكتابية' : '🎙️ قائمة متصدري التفاعل الصوتي';
+
+                        const queryResult = await db.query(
+                            `SELECT user_id, ${columnName} FROM users_xp WHERE guild_id = $1 ORDER BY ${columnName} DESC LIMIT $2 OFFSET $3`,
+                            [guildId, limit, offset]
+                        );
+
+                        const listText = queryResult.rows.length === 0 
+                            ? 'لا توجد بيانات كافية في هذه الصفحة' 
+                            : queryResult.rows.map((row, index) => `**${offset + index + 1}.** <@${row.user_id}> - \`${Math.floor(row[columnName])}\` XP`).join('\n');
+
+                        embed.setTitle(titleName)
+                             .setDescription(listText)
+                             .setFooter({ text: `الصفحة ${page} | بواسطة ${message.author.username}`, iconURL: message.author.displayAvatarURL({ dynamic: true }) });
+
+                        return message.reply({ embeds: [embed] });
+                    } 
                     
-                    const voiceLeaderboard = voiceQuery.rows.length === 0 
-                        ? 'لا يوجد بيانات كافية' 
-                        : voiceQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - ${Math.floor(row.voice_xp)} XP`).join('\n');
+                    // الحالة الثانية: الأمر الأساسي (t أو T منفردة) - أفضل 5 كتابة وأفضل 5 صوت
+                    else {
+                        const textQuery = await db.query('SELECT user_id, text_xp FROM users_xp WHERE guild_id = $1 ORDER BY text_xp DESC LIMIT 5', [guildId]);
+                        const voiceQuery = await db.query('SELECT user_id, voice_xp FROM users_xp WHERE guild_id = $1 ORDER BY voice_xp DESC LIMIT 5', [guildId]);
 
-                    const embed = new EmbedBuilder()
-                        .setTitle('🏆 قائمة أفضل 5 أعضاء متفاعلين')
-                        .setColor('#2b2d31')
-                        .addFields(
-                            { name: '✍️ الرسائل الكتابية', value: textLeaderboard, inline: true },
-                            { name: '🎙️ التفاعل الصوتي', value: voiceLeaderboard, inline: true }
-                        )
-                        .setTimestamp();
+                        const textLeaderboard = textQuery.rows.length === 0 
+                            ? 'لا يوجد بيانات كافية' 
+                            : textQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - \`${Math.floor(row.text_xp)}\` XP`).join('\n');
+                        
+                        const voiceLeaderboard = voiceQuery.rows.length === 0 
+                            ? 'لا يوجد بيانات كافية' 
+                            : voiceQuery.rows.map((row, index) => `**${index + 1}.** <@${row.user_id}> - \`${Math.floor(row.voice_xp)}\` XP`).join('\n');
 
-                    return message.reply({ embeds: [embed] });
+                        embed.setTitle('🏆 قائمة أفضل 5 أعضاء متفاعلين')
+                             .addFields(
+                                { name: '✍️ الرسائل الكتابية', value: textLeaderboard, inline: true },
+                                { name: '🎙️ التفاعل الصوتي', value: voiceLeaderboard, inline: true }
+                             )
+                             .setFooter({ text: `اكتب t voice 2 أو t text لعرض المزيد`, iconURL: message.author.displayAvatarURL({ dynamic: true }) });
+
+                        return message.reply({ embeds: [embed] });
+                    }
+
                 } catch (error) {
                     logger.error("Database Error Leaderboard (T Command):", error);
-                    return message.reply("❌ حدث خطأ أثناء جلب البيانات من قاعدة البيانات.");
+                    return message.reply("❌ حدث خطأ أثناء جلب لوحة المتصدرين من قاعدة البيانات.");
                 }
             }
 
@@ -263,3 +308,4 @@ async function handleWarningsCommand(message, client) {
         logger.error('Error in handleWarningsCommand:', error);
     }
 }
+
